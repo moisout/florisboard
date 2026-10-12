@@ -129,6 +129,18 @@ class FlorisImeService : LifecycleInputMethodService() {
             return ims.switchToNextInputMethod()
         }
 
+        fun switchToPrevSubtype(): Boolean {
+            val ims = FlorisImeServiceReference.get() ?: return false
+            ims.subtypeManager.switchToPrevSubtype()
+            return true
+        }
+
+        fun switchToNextSubtype(): Boolean {
+            val ims = FlorisImeServiceReference.get() ?: return false
+            ims.subtypeManager.switchToNextSubtype()
+            return true
+        }
+
         fun switchToVoiceInputMethod(): Boolean {
             val ims = FlorisImeServiceReference.get() ?: return false
             return ims.switchToVoiceInputMethod()

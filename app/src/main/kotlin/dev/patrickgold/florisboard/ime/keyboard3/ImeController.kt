@@ -33,7 +33,6 @@ import dev.patrickgold.florisboard.ime.editor.ImeOptions
 import dev.patrickgold.florisboard.ime.editor.InputAttributes
 import dev.patrickgold.florisboard.ime.io.StorageController
 import dev.patrickgold.florisboard.ime.keyboard.IncognitoMode
-import dev.patrickgold.florisboard.ime.keyboard3.extension.loadFoundationKeyboard
 import dev.patrickgold.florisboard.ime.keyboard3.hint.FlickKeyHintPlacement
 import dev.patrickgold.florisboard.ime.keyboard3.hint.LongPressKeyHintPlacement
 import dev.patrickgold.florisboard.ime.keyboard3.touch.FnKeyArrangement
@@ -127,11 +126,6 @@ class ImeController(
                         .withDebugShowDragAndDropHelpers(showDragAndDropHelpers),
                 )
             }
-        }
-
-        // TODO proper stateful compilation
-        scope.launch {
-            loadFoundationKeyboard(this@ImeController, storageController.activeStorage.value)
         }
     }
 
@@ -378,8 +372,8 @@ class ImeController(
                 ImeActions.SwitchToPrevInputMethod -> FlorisImeService.switchToPrevInputMethod()
                 ImeActions.SwitchToNextInputMethod -> FlorisImeService.switchToNextInputMethod()
                 ImeActions.ShowSubtypePicker -> {} // TODO
-                ImeActions.SwitchToPrevSubtype -> {} // TODO
-                ImeActions.SwitchToNextSubtype -> {} // TODO
+                ImeActions.SwitchToPrevSubtype -> FlorisImeService.switchToPrevSubtype()
+                ImeActions.SwitchToNextSubtype -> FlorisImeService.switchToNextSubtype()
                 ImeActions.ToggleActionsEditor -> {
                     state = state.copy(
                         flags = state.flags

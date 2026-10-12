@@ -35,30 +35,29 @@ import org.k3lp.model.compileToModel
 
 private val SCOPE_FOUNDATION = K3Descriptor("fl", "ext", "org.florisboard.k3.foundation")
 
-// TODO this is just a placeholder testing code, must be replaced by proper logic & extension-aware logic
+// TODO imports are always resolved against the foundation extension, must be replaced by extension-aware logic
 @OptIn(WillRequireMigrationToRichErrors::class)
-suspend fun loadFoundationKeyboard(imeController: ImeController, storage: Storage) {
-    suspend fun loadAssetFile(path: String): TextSourceFile {
+suspend fun loadKeyboard(imeController: ImeController, storage: Storage, keyboard: ResolvedKeyboard) {
+    suspend fun loadFile(ref: FlorisRef): TextSourceFile {
         val xml = withContext(Dispatchers.IO) {
-            val ref = FlorisRef.assets("extensions/org.florisboard.k3.foundation/$path")
             storage.readText(ref)
         }
         val sourceFile = TextSourceFile(object : SourceFileRef {
             override fun toString(): String {
-                return "toString()"
+                return ref.toString()
             }
         }, xml)
         return sourceFile
     }
     val importResolver = K3ImportResolver { path, _ ->
         val relPath = "import/" + runCatching { Uri.parse(path).path?.removePrefix("/") ?: "" }.getOrDefault(path)
-        loadAssetFile(relPath)
+        loadFile(FlorisRef.assets("extensions/org.florisboard.k3.foundation/$relPath"))
     }
     val impliedImports = K3ImpliedImports(
         displays = listOf("flex://org.florisboard.k3.foundation/displays-implied.xml"),
         keys = listOf("flex://org.florisboard.k3.foundation/keys-implied.xml"),
     )
-    val file = loadAssetFile("keyboard/qwertz.xml")
+    val file = loadFile(keyboard.fileRef)
     val result = file.compileToModel(importResolver, impliedImports)
     for (report in result.reports) {
         flogError { report.cause?.stackTraceToString() ?: "" }

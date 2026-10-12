@@ -68,6 +68,9 @@ import dev.patrickgold.florisboard.ime.core.Subtype
 import dev.patrickgold.florisboard.ime.core.SubtypeJsonConfig
 import dev.patrickgold.florisboard.ime.core.SubtypeNlpProviderMap
 import dev.patrickgold.florisboard.ime.extension.ExtensionComponentName
+import dev.patrickgold.florisboard.ime.extension.LocalExtensionController
+import dev.patrickgold.florisboard.ime.keyboard3.extension.keyboards
+import dev.patrickgold.florisboard.ime.keyboard3.extension.resolveKeyboardFor
 import dev.patrickgold.florisboard.ime.nlp.latin.LatinLanguageProvider
 import dev.patrickgold.florisboard.lib.FlorisLocale
 import dev.patrickgold.florisboard.lib.compose.FlorisScreen
@@ -82,8 +85,161 @@ import org.florisboard.lib.compose.FlorisDropdownLikeButton
 import org.florisboard.lib.compose.florisScrollbar
 import org.florisboard.lib.compose.stringRes
 
+// TODO this is a reduced editor for the keyboard3 engine, which only knows locales and keyboards so far. The
+//  previous editor is kept below as a reference for the properties which are not supported yet.
 @Composable
-fun SubtypeEditorScreen(id: Long?) {} // TODO needs a full rewrite
+fun SubtypeEditorScreen(id: Long?) = FlorisScreen {
+    title = stringRes(if (id == null) {
+        R.string.settings__localization__subtype_add_title
+    } else {
+        R.string.settings__localization__subtype_edit_title
+    })
+
+    val prefs by FlorisPreferenceStore
+    val navController = LocalNavController.current
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val extensionController = LocalExtensionController.current
+    val subtypeManager by context.subtypeManager()
+
+    val displayLanguageNamesIn by prefs.localization.displayLanguageNamesIn.collectAsState()
+    val extensionIndex by extensionController.activeIndex.collectAsState()
+    val keyboards = remember(extensionIndex) { extensionIndex.keyboards() }
+
+    val initSubtype = remember(id) { id?.let { subtypeManager.getSubtypeById(it) } }
+    var primaryLocaleTag by rememberSaveable { mutableStateOf(initSubtype?.primaryLocale?.languageTag()) }
+    var keyboardName by rememberSaveable { mutableStateOf(initSubtype?.keyboard?.toString()) }
+    val primaryLocale = remember(primaryLocaleTag) { primaryLocaleTag?.let { FlorisLocale.fromTag(it) } }
+    val keyboard = remember(keyboardName) { keyboardName?.let { ExtensionComponentName.from(it) } }
+
+    var showSelectAsError by rememberSaveable { mutableStateOf(false) }
+    var errorDialogStrId by rememberSaveable { mutableStateOf<Int?>(null) }
+
+    val selectLocaleScreenResult = navController.currentBackStackEntry
+        ?.savedStateHandle
+        ?.getLiveData<String>(SelectLocaleScreenResultLanguageTag)
+    DisposableEffect(selectLocaleScreenResult, lifecycleOwner) {
+        val observer = Observer<String> { languageTag ->
+            primaryLocaleTag = languageTag
+        }
+        selectLocaleScreenResult?.observe(lifecycleOwner, observer)
+        onDispose { selectLocaleScreenResult?.removeObserver(observer) }
+    }
+
+    actions {
+        if (initSubtype != null) {
+            IconButton(onClick = {
+                subtypeManager.removeSubtype(initSubtype)
+                navController.popBackStack()
+            }) {
+                Icon(
+                    imageVector = Icons.Default.Delete,
+                    contentDescription = null,
+                )
+            }
+        }
+    }
+
+    bottomBar {
+        FlorisButtonBar {
+            ButtonBarSpacer()
+            ButtonBarTextButton(
+                onClick = { navController.popBackStack() },
+                text = stringRes(R.string.action__cancel),
+            )
+            ButtonBarButton(
+                onClick = {
+                    if (primaryLocale == null) {
+                        showSelectAsError = true
+                        errorDialogStrId = R.string.settings__localization__subtype_error_fields_no_value
+                        return@ButtonBarButton
+                    }
+                    val subtype = Subtype(
+                        id = initSubtype?.id ?: -1,
+                        primaryLocale = primaryLocale,
+                        secondaryLocales = initSubtype?.secondaryLocales ?: emptyList(),
+                        nlpProviders = initSubtype?.nlpProviders ?: Subtype.DEFAULT.nlpProviders,
+                        keyboard = keyboard,
+                    )
+                    if (initSubtype == null) {
+                        if (!subtypeManager.addSubtype(subtype)) {
+                            errorDialogStrId = R.string.settings__localization__subtype_error_already_exists
+                            return@ButtonBarButton
+                        }
+                    } else {
+                        subtypeManager.modifySubtypeWithSameId(subtype)
+                    }
+                    navController.popBackStack()
+                },
+                text = stringRes(R.string.action__save),
+            )
+        }
+    }
+
+    content {
+        Column(modifier = Modifier.padding(8.dp)) {
+            Column(modifier = Modifier.padding(vertical = 8.dp)) {
+                Text(
+                    modifier = Modifier.padding(bottom = 8.dp),
+                    text = stringRes(R.string.settings__localization__subtype_locale),
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                FlorisDropdownLikeButton(
+                    item = when {
+                        primaryLocale == null -> stringRes(R.string.settings__localization__subtype_select_placeholder)
+                        displayLanguageNamesIn == DisplayLanguageNamesIn.NATIVE_LOCALE -> {
+                            primaryLocale.displayName(primaryLocale)
+                        }
+                        else -> primaryLocale.displayName()
+                    },
+                    isError = showSelectAsError && primaryLocale == null,
+                    onClick = {
+                        navController.navigate(Routes.Settings.SelectLocale)
+                    },
+                    appearance = JetPrefDropdownMenuDefaults.outlined(shape = ShapeDefaults.Small),
+                )
+            }
+            Column(modifier = Modifier.padding(vertical = 8.dp)) {
+                Text(
+                    modifier = Modifier.padding(bottom = 8.dp),
+                    text = stringRes(R.string.settings__localization__subtype_characters_layout),
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                // The first option leaves the keyboard unset, so it follows the primary language
+                val automaticKeyboard = remember(keyboards, primaryLocale) {
+                    primaryLocale?.let { keyboards.resolveKeyboardFor(null, it) }
+                }
+                val keyboardLabels = remember(keyboards, automaticKeyboard) {
+                    val automaticLabel = context.getString(R.string.settings__localization__subtype_keyboard_automatic)
+                    val automaticName = automaticKeyboard?.component?.name
+                    listOf(if (automaticName != null) "$automaticLabel ($automaticName)" else automaticLabel) +
+                        keyboards.map { it.component.name }
+                }
+                val expanded = remember { mutableStateOf(false) }
+                JetPrefDropdown(
+                    options = keyboardLabels,
+                    expanded = expanded,
+                    selectedOptionIndex = keyboards.indexOfFirst { it.name == keyboard } + 1,
+                    onSelectOption = { index ->
+                        keyboardName = keyboards.getOrNull(index - 1)?.name?.toString()
+                    },
+                    appearance = JetPrefDropdownMenuDefaults.outlined(shape = ShapeDefaults.Small),
+                )
+            }
+        }
+
+        errorDialogStrId?.let { strId ->
+            JetPrefAlertDialog(
+                title = stringRes(R.string.error__title),
+                confirmLabel = stringRes(R.string.action__ok),
+                onConfirm = { errorDialogStrId = null },
+                onDismiss = { errorDialogStrId = null },
+            ) {
+                Text(text = stringRes(strId))
+            }
+        }
+    }
+}
 
 /*
 private val SelectComponentName = ExtensionComponentName("00", "00")

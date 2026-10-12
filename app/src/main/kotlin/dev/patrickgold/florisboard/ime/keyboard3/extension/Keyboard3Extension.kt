@@ -71,6 +71,8 @@ data class Keyboard3Extension(
         val layout: String? = null,
         val indicator: String? = null,
         val attribution: String? = null,
+        /** Language tags of the locales this keyboard is the preferred one for, used if a subtype has no keyboard set. */
+        val locales: List<String> = emptyList(),
     ) : ExtensionComponent
 
     /**

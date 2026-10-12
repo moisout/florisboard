@@ -10,5 +10,16 @@
       "lm41 <lm41@lm41.xyz>"
     ],
     "license": "apache-2.0"
-  }
+  },
+  "imports": [
+    { "id": "displays-implied", "rootElementName": "displays" },
+    { "id": "keys-implied", "rootElementName": "keys" },
+    { "id": "layers-touch", "rootElementName": "layers" }
+  ],
+  "keyboards": [
+    { "id": "qwerty", "name": "English (QWERTY)", "layout": "QWERTY", "indicator": "EN", "locales": [ "en" ] },
+    { "id": "qwertz", "name": "German (QWERTZ)", "layout": "QWERTZ", "indicator": "DE", "locales": [ "de" ] },
+    { "id": "swiss_german", "name": "Swiss German (QWERTZ)", "layout": "QWERTZ", "indicator": "CH", "locales": [ "de-CH" ] }
+  ],
+  "tests": []
 }

@@ -918,6 +918,15 @@ abstract class FlorisPreferenceModel : PreferenceModel() {
                 entry.transform(key = "typing__shift_key_behavior")
             }
 
+            // Migrate subtypes from legacy layout map to keyboard
+            // Keep migration rules until: 0.8 dev cycle
+            "localization__subtypes" -> {
+                runCatching { Subtype.migrateLegacySubtypeList(entry.rawValue) }.fold(
+                    onSuccess = { entry.transform(rawValue = it) },
+                    onFailure = { entry.keepAsIs() },
+                )
+            }
+
             // Default: keep entry
             else -> entry.keepAsIs()
         }

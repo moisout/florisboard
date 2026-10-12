@@ -34,6 +34,8 @@ import dev.patrickgold.florisboard.ime.dictionary.DictionaryManager
 import dev.patrickgold.florisboard.ime.extension.ExtensionController
 import dev.patrickgold.florisboard.ime.io.AndroidStorageController
 import dev.patrickgold.florisboard.ime.keyboard3.ImeController
+import dev.patrickgold.florisboard.ime.keyboard3.extension.loadKeyboard
+import dev.patrickgold.florisboard.ime.keyboard3.extension.resolveKeyboardFor
 import dev.patrickgold.florisboard.ime.media.emoji.FlorisEmojiCompat
 import dev.patrickgold.florisboard.ime.nlp.NlpManager
 import dev.patrickgold.florisboard.ime.text.gestures.GlideTypingManager
@@ -45,6 +47,9 @@ import dev.patrickgold.florisboard.lib.devtools.LogTopic
 import dev.patrickgold.florisboard.lib.devtools.flogError
 import dev.patrickgold.jetpref.datastore.runtime.initAndroid
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -105,6 +110,16 @@ class FlorisApplication : Application() {
             storageController = AndroidStorageController(this)
             extensionController = ExtensionController(storageController)
             imeController = ImeController(storageController, clipboardManager.value)
+            // TODO proper stateful compilation
+            scope.launch {
+                combine(subtypeManager.value.activeSubtypeFlow, extensionController.activeIndex) { subtype, index ->
+                    index.resolveKeyboardFor(subtype)
+                }.distinctUntilChanged().collectLatest { keyboard ->
+                    if (keyboard != null) {
+                        loadKeyboard(imeController, storageController.activeStorage.value, keyboard)
+                    }
+                }
+            }
             themeController = ThemeController(
                 storageController,
                 extensionController,
