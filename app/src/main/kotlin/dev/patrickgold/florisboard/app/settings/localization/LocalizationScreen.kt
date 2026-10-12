@@ -16,12 +16,13 @@
 
 package dev.patrickgold.florisboard.app.settings.localization
 
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.ListItemDefaults
+import androidx.compose.material3.SegmentedListItem
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.MutableState
@@ -31,20 +32,23 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.dp
 import dev.patrickgold.florisboard.R
+import dev.patrickgold.florisboard.app.FlorisPreferenceStore
 import dev.patrickgold.florisboard.app.LocalNavController
 import dev.patrickgold.florisboard.app.Routes
+import dev.patrickgold.florisboard.app.components.FlorisScreenNg
+import dev.patrickgold.florisboard.app.components.ScrollableScreenColumn
+import dev.patrickgold.florisboard.app.components.SegmentedListColumn
 import dev.patrickgold.florisboard.app.enumDisplayEntriesOf
 import dev.patrickgold.florisboard.ime.core.DisplayLanguageNamesIn
 import dev.patrickgold.florisboard.ime.core.Subtype
-import dev.patrickgold.florisboard.app.components.FlorisScreen
+import dev.patrickgold.florisboard.ime.extension.LocalExtensionController
+import dev.patrickgold.florisboard.ime.keyboard3.extension.resolveKeyboardFor
 import dev.patrickgold.florisboard.subtypeManager
+import dev.patrickgold.jetpref.datastore.model.collectAsState
 import dev.patrickgold.jetpref.datastore.ui.ListPreference
 import dev.patrickgold.jetpref.datastore.ui.Preference
-import dev.patrickgold.jetpref.datastore.ui.PreferenceGroup
 import dev.patrickgold.jetpref.datastore.ui.SwitchPreference
 import dev.patrickgold.jetpref.material.ui.JetPrefAlertDialog
 import kotlinx.serialization.json.Json
@@ -61,92 +65,87 @@ internal val SubtypeSaver = Saver<MutableState<Subtype?>, String>(
 )
 
 @Composable
-fun LocalizationScreen() = FlorisScreen {
-    title = stringRes(R.string.settings__localization__title)
-    previewFieldVisible = true
-    iconSpaceReserved = false
-
+fun LocalizationScreen() {
+    val prefs by FlorisPreferenceStore
     val navController = LocalNavController.current
     val context = LocalContext.current
     val subtypeManager by context.subtypeManager()
     var chosenSubtypeToDelete: Subtype? by rememberSaveable(saver = SubtypeSaver) { mutableStateOf(null) }
 
-    floatingActionButton {
-        ExtendedFloatingActionButton(
-            icon = {
-                Icon(
-                    imageVector = Icons.Default.Add,
-                    contentDescription = stringRes(R.string.settings__localization__subtype_add_title),
-                )
-            },
-            text = {
-                Text(
-                    text = stringRes(R.string.settings__localization__subtype_add_title),
-                )
-            },
-            shape = FloatingActionButtonDefaults.extendedFabShape,
-            onClick = { navController.navigate(Routes.Settings.SubtypeAdd) },
-        )
-    }
-
-    content {
-        ListPreference(
-            prefs.localization.displayLanguageNamesIn,
-            title = stringRes(R.string.settings__localization__display_language_names_in__label),
-            entries = enumDisplayEntriesOf(DisplayLanguageNamesIn::class),
-        )
-        SwitchPreference(
-            prefs.localization.displayKeyboardLabelsInSubtypeLanguage,
-            title = stringRes(R.string.settings__localization__display_keyboard_labels_in_subtype_language),
-        )
-        Preference(
-            title = stringRes(R.string.settings__localization__language_pack_title),
-            summary = stringRes(R.string.settings__localization__language_pack_summary),
-            onClick = {
-                navController.navigate(Routes.Settings.LanguagePackManager(LanguagePackManagerScreenAction.MANAGE))
-            },
-        )
-        PreferenceGroup(title = stringRes(R.string.settings__localization__group_subtypes__label)) {
-            val subtypes by subtypeManager.subtypesFlow.collectAsState()
-            if (subtypes.isEmpty()) {
-                FlorisWarningCard(
-                    modifier = Modifier.padding(all = 8.dp),
-                    text = stringRes(R.string.settings__localization__subtype_no_subtypes_configured_warning),
-                )
-            } else {
-                /*
-                val currencySets by keyboardManager.resources.currencySets.collectAsState()
-                val layouts by keyboardManager.resources.layouts.collectAsState()
-                val displayLanguageNamesIn by prefs.localization.displayLanguageNamesIn.collectAsState()
-                for (subtype in subtypes) {
-                    val cMeta = layouts[LayoutType.CHARACTERS]?.get(subtype.layoutMap.characters)
-                    val sMeta = layouts[LayoutType.SYMBOLS]?.get(subtype.layoutMap.symbols)
-                    val currMeta = currencySets[subtype.currencySet]
-                    val summary = stringRes(
-                        id = R.string.settings__localization__subtype_summary,
-                        "characters_name" to (cMeta?.label ?: "null"),
-                        "symbols_name" to (sMeta?.label ?: "null"),
-                        "currency_set_name" to (currMeta?.label ?: "null"),
+    FlorisScreenNg(
+        title = stringRes(R.string.settings__localization__title),
+        previewFieldVisible = true,
+        fab = {
+            ExtendedFloatingActionButton(
+                icon = {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = null,
                     )
-                    Preference(
-                        title = when (displayLanguageNamesIn) {
-                            DisplayLanguageNamesIn.SYSTEM_LOCALE -> subtype.primaryLocale.displayName()
-                            DisplayLanguageNamesIn.NATIVE_LOCALE -> subtype.primaryLocale.displayName(subtype.primaryLocale)
-                        },
-                        summary = summary,
-                        modifier = Modifier.combinedClickable(
-                            onClick = {
-                                navController.navigate(
-                                    Routes.Settings.SubtypeEdit(subtype.id)
+                },
+                text = {
+                    Text(
+                        text = stringRes(R.string.settings__localization__subtype_add_title),
+                    )
+                },
+                shape = FloatingActionButtonDefaults.extendedFabShape,
+                onClick = { navController.navigate(Routes.Settings.SubtypeAdd) },
+            )
+        },
+    ) { contentPadding ->
+        ScrollableScreenColumn(contentPadding) {
+            SegmentedListColumn {
+                val count = 3
+                ListPreference(
+                    prefs.localization.displayLanguageNamesIn,
+                    shapes = ListItemDefaults.segmentedShapes(0, count),
+                    title = stringRes(R.string.settings__localization__display_language_names_in__label),
+                    entries = enumDisplayEntriesOf(DisplayLanguageNamesIn::class),
+                )
+                SwitchPreference(
+                    prefs.localization.displayKeyboardLabelsInSubtypeLanguage,
+                    shapes = ListItemDefaults.segmentedShapes(1, count),
+                    title = stringRes(R.string.settings__localization__display_keyboard_labels_in_subtype_language),
+                )
+                Preference(
+                    onClick = {
+                        navController.navigate(Routes.Settings.LanguagePackManager(LanguagePackManagerScreenAction.MANAGE))
+                    },
+                    shapes = ListItemDefaults.segmentedShapes(2, count),
+                    title = stringRes(R.string.settings__localization__language_pack_title),
+                    summary = stringRes(R.string.settings__localization__language_pack_summary),
+                )
+            }
+
+            SegmentedListColumn(title = stringRes(R.string.settings__localization__group_subtypes__label)) {
+                val subtypes by subtypeManager.subtypesFlow.collectAsState()
+                if (subtypes.isEmpty()) {
+                    FlorisWarningCard(
+                        text = stringRes(R.string.settings__localization__subtype_no_subtypes_configured_warning),
+                    )
+                } else {
+                    val extensionIndex by LocalExtensionController.current.activeIndex.collectAsState()
+                    val displayLanguageNamesIn by prefs.localization.displayLanguageNamesIn.collectAsState()
+                    subtypes.forEachIndexed { index, subtype ->
+                        val keyboardName = extensionIndex.resolveKeyboardFor(subtype)?.component?.name
+                        SegmentedListItem(
+                            onClick = { navController.navigate(Routes.Settings.SubtypeEdit(subtype.id)) },
+                            onLongClick = { chosenSubtypeToDelete = subtype },
+                            shapes = ListItemDefaults.segmentedShapes(index, subtypes.size),
+                            content = {
+                                Text(
+                                    when (displayLanguageNamesIn) {
+                                        DisplayLanguageNamesIn.SYSTEM_LOCALE -> subtype.primaryLocale.displayName()
+                                        DisplayLanguageNamesIn.NATIVE_LOCALE -> {
+                                            subtype.primaryLocale.displayName(subtype.primaryLocale)
+                                        }
+                                    }
                                 )
                             },
-                            onLongClick = {
-                                chosenSubtypeToDelete = subtype
-                            },
+                            supportingContent = keyboardName?.let { { Text(it) } },
                         )
-                    )
+                    }
                 }
-                 */
             }
         }
     }
@@ -161,7 +160,6 @@ fun LocalizationScreen() = FlorisScreen {
             chosenSubtypeToDelete = null
         }
     )
-
 }
 
 @Composable
