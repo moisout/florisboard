@@ -37,11 +37,15 @@ import androidx.compose.ui.util.fastCoerceIn
 import androidx.compose.ui.util.fastFold
 import androidx.compose.ui.util.fastForEach
 import dev.patrickgold.florisboard.app.FlorisPreferenceStore
+import dev.patrickgold.florisboard.ime.keyboard3.ImeActions
 import dev.patrickgold.florisboard.ime.keyboard3.ImeController
 import dev.patrickgold.florisboard.ime.keyboard3.LocalImeController
+import dev.patrickgold.florisboard.ime.keyboard3.OperationUnit
+import dev.patrickgold.florisboard.ime.keyboard3.PreciseSelection
 import dev.patrickgold.florisboard.ime.keyboard3.touch.InputShiftState
 import dev.patrickgold.florisboard.ime.keyboard3.touch.TouchKey
 import dev.patrickgold.florisboard.ime.keyboard3.touch.TouchKeyboard
+import dev.patrickgold.florisboard.ime.text.gestures.SwipeAction
 import dev.patrickgold.jetpref.datastore.model.collectAsState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -58,8 +62,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import org.k3lp.lib.text.K3String
+import org.k3lp.lib.text.asK3String
 import org.k3lp.model.K3Model
 import org.k3lp.model.layer.K3LayerId
+import kotlin.math.abs
 import kotlin.math.pow
 import kotlin.time.Duration
 
@@ -86,7 +93,26 @@ sealed interface TrackedPointer {
         override val downKey: TouchKey,
         val longPress: LongPress,
         val repeatJob: Job?,
+        val swipe: KeySwipe? = null,
     ) : TrackedPointer
+}
+
+/**
+ * Describes an ongoing swipe gesture which started on a key supporting it, replacing the output of the key.
+ *
+ * @property kind The kind of swipe, as determined by the key the pointer went down on.
+ * @property appliedSteps The steps which already have been applied to the editor. Negative steps point to the left.
+ * @property selection The precise selection which is extended by this swipe, if any.
+ */
+data class KeySwipe(
+    val kind: Kind,
+    val appliedSteps: Int,
+    val selection: PreciseSelection?,
+) {
+    enum class Kind {
+        SpaceBar,
+        DeleteKey,
+    }
 }
 
 data class TrackedMultiTapSeq(
@@ -102,6 +128,8 @@ data class PeekLine(
     val end: Offset,
 )
 
+private val SPACE = " ".asK3String()
+
 private data class LastUpKey(
     val touchKey: TouchKey,
     val uptimeMillis: Long,
@@ -114,7 +142,9 @@ class PointerTracker(
     val interactionController: InteractionController,
     val showSimplePopups: Boolean,
     val peekDistanceSqMin: Float,
+    val swipeDistanceThreshold: Float,
 ) {
+    private val prefs by FlorisPreferenceStore
     private val mutationGuard = Mutex()
 
     val trackedPeekPointer: StateFlow<TrackedPointer.Peek?>
@@ -127,6 +157,10 @@ class PointerTracker(
         field = MutableStateFlow(null)
 
     private var lastUpKeyState: LastUpKey? = null
+
+    // Position of the last down or move event of the tracked output pointer. Up events cannot be used for this,
+    // as they may be synthesized from the down event of another pointer.
+    private var lastOutputPosition: Offset = Offset.Zero
 
     suspend fun mutateLocked(action: suspend PointerTracker.() -> Unit) {
         mutationGuard.withLock { action() }
@@ -184,6 +218,7 @@ class PointerTracker(
             )
             interactionController.performFeedback(InteractionKind.KeyPress)
         } else {
+            lastOutputPosition = down.position
             trackedOutputPointer.value = TrackedPointer.Output(
                 id = down.id,
                 down = down,
@@ -283,8 +318,12 @@ class PointerTracker(
             }
         }
         trackedOutputPointer.value?.takeIf { it.id == move.id }?.let { trackedPointer ->
+            lastOutputPosition = move.position
             val longPress = trackedPointer.longPress
-            if (longPress.shouldShowExtendedPopup()) {
+            val swipeKind = trackedPointer.swipe?.kind ?: trackedPointer.downKey.swipeKindOrNull()
+            if (swipeKind != null && !longPress.shouldShowExtendedPopup()) {
+                handleKeySwipeMove(trackedPointer, swipeKind, move.position)
+            } else if (longPress.shouldShowExtendedPopup()) {
                 val position = move.position.normalized(size).let { position ->
                     Offset(
                         x = (position.x)
@@ -324,8 +363,10 @@ class PointerTracker(
         trackedOutputPointer.value?.takeIf { it.id == up.id }?.let { trackedPointer ->
             trackedPointer.longPress.extendedJob?.cancel()
             trackedPointer.repeatJob?.cancel()
+            val isHandledBySwipe = handleKeySwipeUp(trackedPointer)
             imeController.updateState {
                 val output = when {
+                    isHandledBySwipe -> null
                     trackedPointer.downKey == trackedMultiTapSeq.value?.touchKey -> null
                     trackedPointer.longPress.shouldShowExtendedPopup() -> {
                         trackedPointer.longPress.extendedKeys.getOrNull(trackedPointer.longPress.extendedFocusedIndex)
@@ -355,6 +396,170 @@ class PointerTracker(
                     }
                 )
             } else null
+        }
+    }
+
+    private fun TouchKey.swipeKindOrNull(): KeySwipe.Kind? {
+        val output = attrs.output
+        return when {
+            attrs.layerId != null -> null
+            output == ImeActions.Backspace -> KeySwipe.Kind.DeleteKey
+            output is K3String && output == SPACE -> KeySwipe.Kind.SpaceBar
+            else -> null
+        }
+    }
+
+    /**
+     * Converts the horizontal distance of a swipe to steps: none until half the swipe distance threshold has been
+     * passed, then one for each quarter of it. Negative steps point to the left.
+     */
+    private fun swipeStepsOf(dx: Float): Int {
+        val activationDistance = swipeDistanceThreshold / 2f
+        val stepDistance = swipeDistanceThreshold / 4f
+        val distance = abs(dx)
+        if (distance < activationDistance || stepDistance <= 0f) return 0
+        val steps = ((distance - activationDistance) / stepDistance).toInt() + 1
+        return if (dx < 0f) -steps else steps
+    }
+
+    private suspend fun handleKeySwipeMove(
+        trackedPointer: TrackedPointer.Output,
+        kind: KeySwipe.Kind,
+        position: Offset,
+    ) {
+        val distance = position - trackedPointer.down.position
+        val steps = swipeStepsOf(distance.x)
+        var swipe = trackedPointer.swipe
+        if (swipe == null) {
+            // A swipe only begins with a mostly horizontal movement, afterwards it sticks until the pointer is up
+            if (steps == 0 || abs(distance.x) < abs(distance.y)) return
+            val isSupported = when (kind) {
+                KeySwipe.Kind.SpaceBar -> {
+                    prefs.gestures.spaceBarSwipeLeft.get() != SwipeAction.NO_ACTION ||
+                        prefs.gestures.spaceBarSwipeRight.get() != SwipeAction.NO_ACTION
+                }
+                KeySwipe.Kind.DeleteKey -> prefs.gestures.deleteKeySwipeLeft.get() != SwipeAction.NO_ACTION
+            }
+            if (!isSupported) return
+            trackedPointer.longPress.extendedJob?.cancel()
+            trackedPointer.repeatJob?.cancel()
+            val selection: PreciseSelection?
+            imeController.updateState {
+                selection = when {
+                    kind == KeySwipe.Kind.DeleteKey && prefs.gestures.deleteKeySwipeLeft.get().preciseUnitOrNull() != null -> {
+                        beginPreciseSelection()
+                    }
+                    else -> null
+                }
+            }
+            swipe = KeySwipe(kind, appliedSteps = 0, selection = selection)
+        }
+        val newSteps = when (kind) {
+            KeySwipe.Kind.SpaceBar -> {
+                val canMoveLeft = prefs.gestures.spaceBarSwipeLeft.get() == SwipeAction.MOVE_CURSOR_LEFT
+                val canMoveRight = prefs.gestures.spaceBarSwipeRight.get() == SwipeAction.MOVE_CURSOR_RIGHT
+                val newSteps = steps.coerceIn(if (canMoveLeft) Int.MIN_VALUE else 0, if (canMoveRight) Int.MAX_VALUE else 0)
+                val delta = newSteps - swipe.appliedSteps
+                if (delta != 0) {
+                    imeController.updateState {
+                        repeat(abs(delta)) {
+                            emitDescriptor(if (delta < 0) ImeActions.ArrowLeft else ImeActions.ArrowRight)
+                        }
+                    }
+                }
+                newSteps
+            }
+            KeySwipe.Kind.DeleteKey -> {
+                val newSteps = steps.coerceAtMost(0)
+                val unit = prefs.gestures.deleteKeySwipeLeft.get().preciseUnitOrNull()
+                val selection = swipe.selection
+                if (newSteps != swipe.appliedSteps && unit != null && selection != null) {
+                    imeController.updateState {
+                        updatePreciseSelection(selection, unit.countFor(newSteps), unit)
+                    }
+                }
+                newSteps
+            }
+        }
+        if (newSteps != swipe.appliedSteps) {
+            // Each step of a moving swipe is covered by the "moving swipe" input feedback preferences
+            interactionController.performFeedback(InteractionKind.TextHandleMove)
+        }
+        trackedOutputPointer.value = trackedPointer.copy(
+            longPress = LongPress.None,
+            repeatJob = null,
+            swipe = swipe.copy(appliedSteps = newSteps),
+        )
+    }
+
+    /**
+     * Finishes the swipe of given [trackedPointer], if there is one. Returns true if the swipe replaces the
+     * output of the key.
+     */
+    private suspend fun handleKeySwipeUp(trackedPointer: TrackedPointer.Output): Boolean {
+        val distance = lastOutputPosition - trackedPointer.down.position
+        val swipe = trackedPointer.swipe
+        if (swipe == null) {
+            // The only swipe which does not track its movement is the upwards swipe on the space bar
+            val action = prefs.gestures.spaceBarSwipeUp.get()
+            val isSwipeUp = trackedPointer.downKey.swipeKindOrNull() == KeySwipe.Kind.SpaceBar &&
+                !trackedPointer.longPress.shouldShowExtendedPopup() &&
+                distance.y <= -swipeDistanceThreshold * 1.5f && abs(distance.y) > abs(distance.x)
+            if (!isSwipeUp || action == SwipeAction.NO_ACTION) return false
+            imeController.updateState { emitSwipeAction(action) }
+            return true
+        }
+        when (swipe.kind) {
+            KeySwipe.Kind.SpaceBar -> {
+                val action = when {
+                    distance.x <= -swipeDistanceThreshold -> prefs.gestures.spaceBarSwipeLeft.get()
+                    distance.x >= swipeDistanceThreshold -> prefs.gestures.spaceBarSwipeRight.get()
+                    else -> SwipeAction.NO_ACTION
+                }
+                // Moving the cursor has already been applied while swiping
+                if (action != SwipeAction.MOVE_CURSOR_LEFT && action != SwipeAction.MOVE_CURSOR_RIGHT) {
+                    imeController.updateState { emitSwipeAction(action) }
+                }
+            }
+            KeySwipe.Kind.DeleteKey -> {
+                val action = prefs.gestures.deleteKeySwipeLeft.get()
+                val unit = action.preciseUnitOrNull()
+                val selection = swipe.selection
+                when {
+                    unit == null -> if (distance.x <= -swipeDistanceThreshold) {
+                        imeController.updateState { emitSwipeAction(action) }
+                    }
+                    selection != null && action.isPreciseDelete() -> imeController.updateState {
+                        deletePreciseSelection(selection, unit.countFor(swipe.appliedSteps), unit)
+                    }
+                    else -> {
+                        // The text has been selected while swiping and stays selected
+                    }
+                }
+            }
+        }
+        return true
+    }
+
+    private fun SwipeAction.preciseUnitOrNull(): OperationUnit? {
+        return when (this) {
+            SwipeAction.DELETE_CHARACTERS_PRECISELY, SwipeAction.SELECT_CHARACTERS_PRECISELY -> OperationUnit.CHARACTERS
+            SwipeAction.DELETE_WORDS_PRECISELY, SwipeAction.SELECT_WORDS_PRECISELY -> OperationUnit.WORDS
+            else -> null
+        }
+    }
+
+    private fun SwipeAction.isPreciseDelete(): Boolean {
+        return this == SwipeAction.DELETE_CHARACTERS_PRECISELY || this == SwipeAction.DELETE_WORDS_PRECISELY
+    }
+
+    /**
+     * Returns how many units given leftwards [steps] cover. Words need twice the distance of characters.
+     */
+    private fun OperationUnit.countFor(steps: Int): Int {
+        return when (this) {
+            OperationUnit.CHARACTERS -> -steps
+            OperationUnit.WORDS -> (-steps + 1) / 2
         }
     }
 
@@ -448,9 +653,14 @@ fun rememberPointerTracker(
     val showSimplePopups by prefs.keyboard.popupEnabled.collectAsState()
     // TODO make configurable
     val peekDistanceSqMin = with(density) { 30.dp.toPx().pow(2) }
+    val swipeDistanceThresholdDp by prefs.gestures.swipeDistanceThreshold.collectAsState()
+    val swipeDistanceThreshold = with(density) { swipeDistanceThresholdDp.dp.toPx() }
 
-    val pointerTracker = remember(touchKeyboard, showSimplePopups) {
-        PointerTracker(touchKeyboard, imeController, interactionController, showSimplePopups, peekDistanceSqMin)
+    val pointerTracker = remember(touchKeyboard, showSimplePopups, swipeDistanceThreshold) {
+        PointerTracker(
+            touchKeyboard, imeController, interactionController, showSimplePopups, peekDistanceSqMin,
+            swipeDistanceThreshold,
+        )
     }
 
     return pointerTracker

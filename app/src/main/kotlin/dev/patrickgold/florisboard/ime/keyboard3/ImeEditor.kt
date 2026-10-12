@@ -40,7 +40,7 @@ open class ImeEditor(
     val ic: WeakReference<InputConnection>,
     val info: FlorisEditorInfo,
 ) : K3Editor {
-    fun getSurroundingText(charsBefore: Int, charsAfter: Int): K3SurroundingText {
+    open fun getSurroundingText(charsBefore: Int, charsAfter: Int): K3SurroundingText {
         val ic = ic.get() ?: return K3SurroundingText.Empty
         // TODO maybe use eet for getSurroundingText??
 //        val eet = ic.getExtractedText(
@@ -86,6 +86,20 @@ open class ImeEditor(
     fun deleteSurroundingText(charsBefore: Int, charsAfter: Int) {
         val ic = ic.get() ?: return
         ic.deleteSurroundingText(charsBefore, charsAfter)
+    }
+
+    open fun setSelection(start: Int, end: Int) {
+        val ic = ic.get() ?: return
+        ic.setSelection(start, end)
+    }
+
+    open fun deleteRange(start: Int, end: Int) {
+        val ic = ic.get() ?: return
+        ic.beginBatchEdit()
+        ic.finishComposingText()
+        ic.setSelection(start, end)
+        ic.commitText("", 1)
+        ic.endBatchEdit()
     }
 
     fun performClipboardCopy(): Boolean {
@@ -182,7 +196,7 @@ open class ImeEditor(
         )
     }
 
-    fun sendDownUpKeyEvent(keyCode: Int, metaState: Int = 0): Boolean {
+    open fun sendDownUpKeyEvent(keyCode: Int, metaState: Int = 0): Boolean {
         val ic = ic.get() ?: return false
         val downTime = SystemClock.uptimeMillis()
         ic.sendDownKeyEvent(keyCode, metaState, downTime)
