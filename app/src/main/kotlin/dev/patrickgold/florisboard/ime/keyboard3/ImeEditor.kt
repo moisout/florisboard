@@ -18,6 +18,7 @@ package dev.patrickgold.florisboard.ime.keyboard3
 
 import android.content.ClipDescription
 import android.content.ContentUris
+import android.net.Uri
 import android.os.SystemClock
 import android.view.KeyCharacterMap
 import android.view.KeyEvent
@@ -130,6 +131,18 @@ open class ImeEditor(
             ClipDescription("clipboard media file", mimeTypes.toTypedArray()),
             null,
         )
+        ic.finishComposingText()
+        val flags = InputConnectionCompat.INPUT_CONTENT_GRANT_READ_URI_PERMISSION
+        return InputConnectionCompat.commitContent(ic, info.base, inputContentInfo, flags, null)
+    }
+
+    /**
+     * Commits the content of given [uri] to the editor. The URI must belong to a content provider of this app
+     * which grants URI permissions. Returns false if the editor did not accept the content.
+     */
+    open fun commitContent(uri: Uri, mimeType: String, label: String): Boolean {
+        val ic = ic.get() ?: return false
+        val inputContentInfo = InputContentInfoCompat(uri, ClipDescription(label, arrayOf(mimeType)), null)
         ic.finishComposingText()
         val flags = InputConnectionCompat.INPUT_CONTENT_GRANT_READ_URI_PERMISSION
         return InputConnectionCompat.commitContent(ic, info.base, inputContentInfo, flags, null)

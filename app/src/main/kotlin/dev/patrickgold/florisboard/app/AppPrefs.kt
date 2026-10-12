@@ -39,6 +39,7 @@ import dev.patrickgold.florisboard.ime.keyboard3.touch.TouchModelOptions
 import dev.patrickgold.florisboard.ime.landscapeinput.LandscapeInputUiMode
 import dev.patrickgold.florisboard.ime.media.emoji.EmojiHairStyle
 import dev.patrickgold.florisboard.ime.media.emoji.EmojiHistory
+import dev.patrickgold.florisboard.ime.media.gif.GifHistory
 import dev.patrickgold.florisboard.ime.media.emoji.EmojiSkinTone
 import dev.patrickgold.florisboard.ime.media.emoji.EmojiSuggestionType
 import dev.patrickgold.florisboard.ime.nlp.SpellingLanguageMode
@@ -271,6 +272,19 @@ abstract class FlorisPreferenceModel : PreferenceModel() {
         val suggestionCandidateMaxCount = int(
             key = "emoji__suggestion_candidate_max_count",
             default = 5,
+        )
+    }
+
+    val gif = Gif()
+    inner class Gif {
+        val historyData = custom(
+            key = "gif__history_data",
+            default = GifHistory.Empty,
+            serializer = GifHistory.Serializer,
+        )
+        val customerId = string(
+            key = "gif__customer_id",
+            default = "",
         )
     }
 

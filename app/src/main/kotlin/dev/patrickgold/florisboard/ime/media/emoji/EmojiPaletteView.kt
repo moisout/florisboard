@@ -21,11 +21,15 @@ import android.graphics.Typeface
 import android.util.TypedValue
 import android.widget.TextView
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -40,6 +44,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.GenericShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
@@ -47,9 +52,6 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.PrimaryTabRow
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRowDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -65,10 +67,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -108,6 +114,7 @@ import kotlin.math.ceil
 
 private val EmojiCategoryValues = EmojiCategory.entries
 private val EmojiBaseWidth = 42.dp
+private val EmojiCategoryTabWidth = 44.dp
 private val EmojiDefaultFontSize = 22.sp
 
 private val VariantsTriangleShapeLtr = GenericShape { size, _ ->
@@ -132,6 +139,7 @@ data class EmojiMappingForView(
 fun EmojiPaletteView(
     fullEmojiMappings: EmojiData,
     modifier: Modifier = Modifier,
+    tabRowLeadingContent: @Composable () -> Unit = {},
 ) {
     val prefs by FlorisPreferenceStore
     val context = LocalContext.current
@@ -236,45 +244,69 @@ fun EmojiPaletteView(
         activeCategory: EmojiCategory,
         onCategoryChange: (EmojiCategory) -> Unit,
     ) {
+        val density = LocalDensity.current
         val interactionController = LocalInteractionController.current
         val selectedTabIndex = categoryToPageNumber(activeCategory)
-        val style = rememberSnyggThemeQuery(FlorisImeUi.MediaEmojiTab.elementName)
-        PrimaryTabRow(
+        val indicatorStyle = rememberSnyggThemeQuery(
+            elementName = FlorisImeUi.MediaEmojiTab.elementName,
+            selector = SnyggSelector.FOCUS,
+        )
+        val indicatorColor = indicatorStyle.foreground()
+        val scrollState = rememberScrollState()
+        var leadingContentWidthPx by remember { mutableIntStateOf(0) }
+
+        // Keep the tab of the active category visible, as it can also change by swiping through the pages
+        LaunchedEffect(selectedTabIndex, leadingContentWidthPx) {
+            val tabWidthPx = with(density) { EmojiCategoryTabWidth.toPx() }
+            val tabCenterPx = leadingContentWidthPx + tabWidthPx * (selectedTabIndex + 0.5f)
+            scrollState.animateScrollTo((tabCenterPx - scrollState.viewportSize / 2f).toInt())
+        }
+
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(FlorisImeSizing.smartbarHeight),
-            selectedTabIndex = selectedTabIndex,
-            containerColor = Color.Transparent,
-            contentColor = style.foreground(),
-            indicator = {
-                val style = rememberSnyggThemeQuery(
-                    elementName = FlorisImeUi.MediaEmojiTab.elementName,
-                    selector = SnyggSelector.FOCUS,
-                )
-                TabRowDefaults.PrimaryIndicator(
-                    Modifier.tabIndicatorOffset(selectedTabIndex),
-                    height = 4.dp,
-                    color = style.foreground(),
-                )
-            },
+                .height(FlorisImeSizing.smartbarHeight)
+                .horizontalScroll(scrollState),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            for (category in EmojiCategoryValues) {
-                if (category == EmojiCategory.RECENTLY_USED && !emojiHistoryEnabled) {
-                    continue
+            // The leading content scrolls away together with the tabs
+            Box(modifier = Modifier.onSizeChanged { leadingContentWidthPx = it.width }) {
+                tabRowLeadingContent()
+            }
+            Row(modifier = Modifier.fillMaxHeight()) {
+                for (category in EmojiCategoryValues) {
+                    if (category == EmojiCategory.RECENTLY_USED && !emojiHistoryEnabled) {
+                        continue
+                    }
+                    val isSelected = activeCategory == category
+                    Box(
+                        modifier = Modifier
+                            .width(EmojiCategoryTabWidth)
+                            .fillMaxHeight()
+                            .clickable {
+                                interactionController.performFeedback(InteractionKind.KeyPress)
+                                onCategoryChange(category)
+                            }
+                            .drawBehind {
+                                if (isSelected) {
+                                    val indicatorHeight = 4.dp.toPx()
+                                    drawRect(
+                                        color = indicatorColor,
+                                        topLeft = Offset(0f, size.height - indicatorHeight),
+                                        size = Size(size.width, indicatorHeight),
+                                    )
+                                }
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        SnyggIcon(
+                            elementName = FlorisImeUi.MediaEmojiTab.elementName,
+                            selector = if (isSelected) SnyggSelector.FOCUS else SnyggSelector.NONE,
+                            modifier = Modifier.size(ButtonDefaults.IconSize),
+                            imageVector = category.icon(),
+                        )
+                    }
                 }
-                Tab(
-                    onClick = {
-                        interactionController.performFeedback(InteractionKind.KeyPress)
-                        onCategoryChange(category)
-                    },
-                    selected = activeCategory == category,
-                    icon = { SnyggIcon(
-                        elementName = FlorisImeUi.MediaEmojiTab.elementName,
-                        selector = if (activeCategory == category) SnyggSelector.FOCUS else SnyggSelector.NONE,
-                        modifier = Modifier.size(ButtonDefaults.IconSize),
-                        imageVector = category.icon(),
-                    ) },
-                )
             }
         }
     }

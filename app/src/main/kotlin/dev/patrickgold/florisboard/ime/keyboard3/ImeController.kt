@@ -17,7 +17,9 @@ import dev.patrickgold.florisboard.ime.text.key.KeyCode
 
 package dev.patrickgold.florisboard.ime.keyboard3
 
+import android.content.ClipDescription
 import android.icu.text.BreakIterator
+import android.net.Uri
 import android.text.TextUtils
 import android.view.KeyEvent
 import android.view.inputmethod.InputConnection
@@ -511,6 +513,17 @@ class ImeController(
 //                }
 //            }
             return false
+        }
+
+        /**
+         * Commits the content of given [uri] to the editor, if the editor declares to support given [mimeType].
+         * Returns false if the content has not been committed.
+         */
+        fun emitContent(uri: Uri, mimeType: String, label: String): Boolean {
+            val isSupported = state.editor.info.contentMimeTypes.any { supportedMimeType ->
+                ClipDescription.compareMimeTypes(mimeType, supportedMimeType)
+            }
+            return isSupported && state.editor.commitContent(uri, mimeType, label)
         }
 
         fun emitSwipeAction(action: SwipeAction) {

@@ -54,6 +54,25 @@
     <string name="emoji__search__placeholder" comment="Placeholder of the emoji search field">Search emoji</string>
     <string name="emoji__search__no_results" comment="Message if the emoji search did not find anything">No emoji found</string>
 
+    <string name="media__text_panel_label" comment="Label of the button in the media panel which switches back to the keyboard" translatable="false">ABC</string>
+
+    <!-- GIF strings -->
+    <string name="gif__tab_label" comment="Label of the GIF tab in the media panel" translatable="false">GIF</string>
+    <string name="gif__category__recent" comment="GIF category name">Recently used</string>
+    <string name="gif__category__favorites" comment="GIF category name">Favorites</string>
+    <string name="gif__category__trending" comment="GIF category name">Trending</string>
+    <string name="gif__search__placeholder" comment="Placeholder of the GIF search field, the name of the provider must be kept" translatable="false">Search KLIPY</string>
+    <string name="gif__search__no_results" comment="Message if the GIF search did not find anything">No GIFs found</string>
+    <string name="gif__recent__empty_message" comment="Message if there are no recently used GIFs">GIFs you send will appear here.</string>
+    <string name="gif__favorites__empty_message" comment="Message if there are no favorite GIFs">Long press a GIF to add it to your favorites.</string>
+    <string name="gif__favorites__added" comment="Toast message if a GIF has been added to the favorites">Added to favorites</string>
+    <string name="gif__favorites__removed" comment="Toast message if a GIF has been removed from the favorites">Removed from favorites</string>
+    <string name="gif__error__loading" comment="Message if GIFs could not be loaded">Could not load GIFs: {error_message}</string>
+    <string name="gif__error__rate_limit" comment="Message if the hourly limit of the GIF provider has been reached">The hourly GIF limit has been reached, please try again later.</string>
+    <string name="gif__error__sending" comment="Toast message if a GIF could not be inserted">Could not insert GIF: {error_message}</string>
+    <string name="gif__error__not_supported" comment="Toast message if the app does not accept GIFs">This app does not accept GIFs, a link has been inserted instead.</string>
+    <string name="gif__action__retry" comment="Button to retry loading GIFs">Retry</string>
+
     <!-- Quick action strings -->
     <string name="quick_action__arrow_up" comment="Please mind the limited available space for the quick action strings">Arrow up</string>
     <string name="quick_action__arrow_up__tooltip">Perform arrow up</string>
