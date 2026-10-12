@@ -47,6 +47,14 @@ import dev.patrickgold.florisboard.app.FlorisPreferenceModel
 import dev.patrickgold.florisboard.app.FlorisPreferenceStore
 import dev.patrickgold.florisboard.app.LocalNavController
 import dev.patrickgold.florisboard.clipboardManager
+import dev.patrickgold.florisboard.ime.extension.ExtensionController
+import dev.patrickgold.florisboard.ime.extension.ExtensionDefaults
+import dev.patrickgold.florisboard.ime.extension.ExtensionManifest
+import dev.patrickgold.florisboard.ime.extension.LocalExtensionController
+import dev.patrickgold.florisboard.ime.io.ZipUtils
+import dev.patrickgold.florisboard.ime.keyboard3.interaction.LocalInteractionController
+import dev.patrickgold.florisboard.ime.keyboard3.interaction.showLongToast
+import dev.patrickgold.florisboard.ime.theme.ThemeExtension
 import dev.patrickgold.florisboard.ime.clipboard.provider.ClipboardFileStorage
 import dev.patrickgold.florisboard.ime.clipboard.provider.ClipboardItem
 import dev.patrickgold.florisboard.ime.clipboard.provider.ItemType
@@ -61,6 +69,7 @@ import java.util.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.florisboard.lib.android.readToFile
 import org.florisboard.lib.compose.FlorisButtonBar
 import org.florisboard.lib.compose.FlorisCardDefaults
@@ -68,7 +77,7 @@ import org.florisboard.lib.compose.FlorisOutlinedBox
 import org.florisboard.lib.compose.FlorisOutlinedButton
 import org.florisboard.lib.compose.defaultFlorisOutlinedBox
 import org.florisboard.lib.compose.stringRes
-import org.florisboard.lib.kotlin.io.deleteContentsRecursively
+import org.florisboard.lib.kotlin.io.FsDir
 import org.florisboard.lib.kotlin.io.readJson
 import org.florisboard.lib.kotlin.io.subDir
 import org.florisboard.lib.kotlin.io.subFile
@@ -77,16 +86,86 @@ object Restore {
     const val MIN_VERSION_CODE = 64
     const val PACKAGE_NAME = "dev.patrickgold.florisboard"
     const val BACKUP_ARCHIVE_FILE_NAME = "backup.zip"
+
+    /**
+     * Relative path of the theme extensions in backups created before the keyboard3 rework. Back then extensions
+     * were stored as flex archives, grouped by type.
+     */
+    const val LEGACY_IME_THEME_PATH = "ime/theme"
+    /**
+     * Relative path of the keyboard extensions in backups created before the keyboard3 rework. These contain
+     * layouts in the old JSON format and cannot be restored.
+     */
+    const val LEGACY_IME_KEYBOARD_PATH = "ime/keyboard"
+
+    private val ExtensionIdRegex = """^[a-zA-Z0-9_][a-zA-Z0-9_.\-]*$""".toRegex()
+
+    /**
+     * Restores the extensions of a backup created by the current version, where each extension is a directory
+     * within `files/extensions`. Only restores extensions which match given [serialTypes].
+     */
+    fun restoreExtensions(backupExtensionsDir: FsDir, extensionsDir: FsDir, serialTypes: Set<String>) {
+        for (extDir in backupExtensionsDir.listFiles().orEmpty()) {
+            if (extDir.isDirectory && Backup.extensionSerialTypeOf(extDir) in serialTypes) {
+                installExtension(extDir, extensionsDir)
+            }
+        }
+    }
+
+    /**
+     * Restores the theme extensions of a backup created before the keyboard3 rework, where each extension is a
+     * flex archive within `files/ime/theme`.
+     */
+    fun restoreLegacyThemeExtensions(legacyThemeDir: FsDir, extensionsDir: FsDir, tempDir: FsDir) {
+        for (file in legacyThemeDir.listFiles().orEmpty()) {
+            val extDir = if (file.isDirectory) {
+                file
+            } else if (file.extension == ExtensionDefaults.FILE_EXTENSION) {
+                tempDir.subDir(file.nameWithoutExtension).also { ZipUtils.unzip(file, it) }
+            } else {
+                continue
+            }
+            if (Backup.extensionSerialTypeOf(extDir) == ThemeExtension.SERIAL_TYPE) {
+                installExtension(extDir, extensionsDir)
+            }
+        }
+    }
+
+    /**
+     * Deletes all extensions within [extensionsDir] which match given [serialTypes].
+     */
+    fun deleteExtensions(extensionsDir: FsDir, serialTypes: Set<String>) {
+        for (extDir in extensionsDir.listFiles().orEmpty()) {
+            if (extDir.isDirectory && Backup.extensionSerialTypeOf(extDir) in serialTypes) {
+                extDir.deleteRecursively()
+            }
+        }
+    }
+
+    /**
+     * Copies the unpacked extension in [srcDir] to [extensionsDir], using the ID in its manifest as directory
+     * name, as required by the extension index. Replaces an already installed extension with the same ID.
+     */
+    private fun installExtension(srcDir: FsDir, extensionsDir: FsDir) {
+        val manifest = srcDir.subFile(ExtensionDefaults.MANIFEST_FILE_NAME)
+            .readJson<ExtensionManifest>(ExtensionController.ExtensionJson)
+        val id = manifest.meta.id
+        require(ExtensionIdRegex.matches(id)) { "Invalid extension ID '$id'" }
+        val dstDir = extensionsDir.subDir(id)
+        dstDir.deleteRecursively()
+        srcDir.copyRecursively(dstDir, overwrite = true)
+    }
 }
 
 @Composable
-fun RestoreScreen() {} /*= FlorisScreen {
+fun RestoreScreen() = FlorisScreen {
     title = stringRes(R.string.backup_and_restore__restore__title)
     previewFieldVisible = false
 
     val navController = LocalNavController.current
     val context = LocalContext.current
-    val cacheManager by context.cacheManager()
+    val extensionController = LocalExtensionController.current
+    val interactionController = LocalInteractionController.current
 
     val restoreFilesSelector = remember { Backup.FilesSelector() }
     var importStrategy by remember { mutableStateOf(ImportStrategy.Merge) }
@@ -94,7 +173,13 @@ fun RestoreScreen() {} /*= FlorisScreen {
     //  not make sense at all. I suspect that this is a bug and once it is resolved we can use it here again.
     val restoreScope = remember { CoroutineScope(Dispatchers.Main) }
     var restoreWorkspace by remember {
-        mutableStateOf<CacheManager.BackupAndRestoreWorkspace?>(null)
+        mutableStateOf<Backup.Workspace?>(null)
+    }
+
+    fun showToast(resId: Int, vararg args: Pair<String, Any?>) {
+        restoreScope.launch {
+            interactionController.showLongToast(context.getString(resId), *args)
+        }
     }
 
     val restoreDataFromFileSystemLauncher = rememberLauncherForActivityResult(
@@ -104,7 +189,7 @@ fun RestoreScreen() {} /*= FlorisScreen {
             runCatching {
                 restoreWorkspace?.close()
                 restoreWorkspace = null
-                val workspace = cacheManager.backupAndRestore.new()
+                val workspace = Backup.newWorkspace(context)
                 workspace.zipFile = workspace.inputDir.subFile(Restore.BACKUP_ARCHIVE_FILE_NAME)
                 context.contentResolver.readToFile(uri, workspace.zipFile)
                 ZipUtils.unzip(workspace.zipFile, workspace.outputDir)
@@ -128,9 +213,13 @@ fun RestoreScreen() {} /*= FlorisScreen {
                     }
                     else -> null
                 }
+                workspace.isLegacyFormat = workspace.outputDir.subDir("files").let { filesDir ->
+                    filesDir.subDir(Restore.LEGACY_IME_THEME_PATH).exists() ||
+                        filesDir.subDir(Restore.LEGACY_IME_KEYBOARD_PATH).exists()
+                }
                 restoreWorkspace = workspace
             }.onFailure { error ->
-                context.showLongToastSync(
+                showToast(
                     R.string.backup_and_restore__restore__failure,
                     "error_message" to error.localizedMessage,
                 )
@@ -151,25 +240,28 @@ fun RestoreScreen() {} /*= FlorisScreen {
             }
         }
         val workspaceFilesDir = workspace.outputDir.subDir("files")
-        if (restoreFilesSelector.imeKeyboard) {
-            val srcDir = workspaceFilesDir.subDir(ExtensionManager.IME_KEYBOARD_PATH)
-            val dstDir = context.filesDir.subDir(ExtensionManager.IME_KEYBOARD_PATH)
-            if (shouldReset) {
-                dstDir.deleteContentsRecursively()
+        val extensionSerialTypes = Backup.selectedExtensionSerialTypes(restoreFilesSelector)
+        if (extensionSerialTypes.isNotEmpty()) {
+            withContext(Dispatchers.IO) {
+                val extensionsDir = context.filesDir.subDir(ExtensionController.EXTENSIONS_PATH)
+                extensionsDir.mkdirs()
+                if (shouldReset) {
+                    Restore.deleteExtensions(extensionsDir, extensionSerialTypes)
+                }
+                Restore.restoreExtensions(
+                    backupExtensionsDir = workspaceFilesDir.subDir(ExtensionController.EXTENSIONS_PATH),
+                    extensionsDir = extensionsDir,
+                    serialTypes = extensionSerialTypes,
+                )
+                if (restoreFilesSelector.imeTheme) {
+                    Restore.restoreLegacyThemeExtensions(
+                        legacyThemeDir = workspaceFilesDir.subDir(Restore.LEGACY_IME_THEME_PATH),
+                        extensionsDir = extensionsDir,
+                        tempDir = workspace.outputDir.subDir("legacy-extensions"),
+                    )
+                }
             }
-            if (srcDir.exists()) {
-                srcDir.copyRecursively(dstDir, overwrite = true)
-            }
-        }
-        if (restoreFilesSelector.imeTheme) {
-            val srcDir = workspaceFilesDir.subDir(ExtensionManager.IME_THEME_PATH)
-            val dstDir = context.filesDir.subDir(ExtensionManager.IME_THEME_PATH)
-            if (shouldReset) {
-                dstDir.deleteContentsRecursively()
-            }
-            if (srcDir.exists()) {
-                srcDir.copyRecursively(dstDir, overwrite = true)
-            }
+            extensionController.reindex()
         }
         val clipboardManager = context.clipboardManager().value
         if (shouldReset) {
@@ -243,11 +335,11 @@ fun RestoreScreen() {} /*= FlorisScreen {
                     restoreScope.launch(Dispatchers.Main) {
                         try {
                             performRestore()
-                            context.showLongToast(R.string.backup_and_restore__restore__success)
+                            showToast(R.string.backup_and_restore__restore__success)
                             navController.navigateUp()
                         } catch (e: Throwable) {
                             e.printStackTrace()
-                            context.showLongToast(
+                            showToast(
                                 R.string.backup_and_restore__restore__failure,
                                 "error_message" to e.localizedMessage,
                             )
@@ -283,9 +375,9 @@ fun RestoreScreen() {} /*= FlorisScreen {
         FlorisOutlinedButton(
             onClick = {
                 runCatching {
-                    restoreDataFromFileSystemLauncher.launch("* / *")
+                    restoreDataFromFileSystemLauncher.launch("*/*")
                 }.onFailure { error ->
-                    context.showLongToastSync(
+                    showToast(
                         R.string.backup_and_restore__restore__failure,
                         "error_message" to error.localizedMessage,
                     )
@@ -361,6 +453,14 @@ fun RestoreScreen() {} /*= FlorisScreen {
                     }
                 }
             }
+            if (workspace.restoreErrorId == null && workspace.isLegacyFormat) {
+                Text(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    text = stringRes(R.string.backup_and_restore__restore__legacy_format_note),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontStyle = FontStyle.Italic,
+                )
+            }
             if (workspace.restoreErrorId == null) {
                 BackupFilesSelector(
                     filesSelector = restoreFilesSelector,
@@ -369,4 +469,4 @@ fun RestoreScreen() {} /*= FlorisScreen {
             }
         }
     }
-}*/
+}

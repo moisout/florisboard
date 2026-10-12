@@ -17,6 +17,7 @@
 package dev.patrickgold.florisboard.app.settings.advanced
 
 import android.content.ContentUris
+import android.content.Context
 import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -46,6 +47,14 @@ import dev.patrickgold.florisboard.app.FlorisPreferenceModel
 import dev.patrickgold.florisboard.app.FlorisPreferenceStore
 import dev.patrickgold.florisboard.app.LocalNavController
 import dev.patrickgold.florisboard.clipboardManager
+import dev.patrickgold.florisboard.ime.extension.ExtensionController
+import dev.patrickgold.florisboard.ime.extension.ExtensionDefaults
+import dev.patrickgold.florisboard.ime.io.FileRegistry
+import dev.patrickgold.florisboard.ime.io.ZipUtils
+import dev.patrickgold.florisboard.ime.keyboard3.extension.Keyboard3Extension
+import dev.patrickgold.florisboard.ime.keyboard3.interaction.LocalInteractionController
+import dev.patrickgold.florisboard.ime.keyboard3.interaction.showLongToast
+import dev.patrickgold.florisboard.ime.theme.ThemeExtension
 import dev.patrickgold.florisboard.ime.clipboard.provider.ClipboardFileStorage
 import dev.patrickgold.florisboard.ime.clipboard.provider.ItemType
 import dev.patrickgold.florisboard.lib.compose.FlorisScreen
@@ -53,18 +62,28 @@ import dev.patrickgold.florisboard.lib.devtools.flogError
 import dev.patrickgold.jetpref.datastore.runtime.AndroidAppDataStorage
 import dev.patrickgold.jetpref.datastore.runtime.FileBasedStorage
 import dev.patrickgold.jetpref.material.ui.JetPrefListItem
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.florisboard.lib.android.writeFromFile
 import org.florisboard.lib.compose.FlorisButtonBar
 import org.florisboard.lib.compose.FlorisOutlinedBox
 import org.florisboard.lib.compose.defaultFlorisOutlinedBox
 import org.florisboard.lib.compose.rippleClickable
 import org.florisboard.lib.compose.stringRes
+import org.florisboard.lib.kotlin.io.FsDir
+import org.florisboard.lib.kotlin.io.FsFile
 import org.florisboard.lib.kotlin.io.subDir
 import org.florisboard.lib.kotlin.io.subFile
 import org.florisboard.lib.kotlin.io.writeJson
+import java.io.Closeable
+import java.util.UUID
 
 object Backup {
     const val FILE_PROVIDER_AUTHORITY = "${BuildConfig.APPLICATION_ID}.provider.file"
@@ -72,6 +91,56 @@ object Backup {
     const val CLIPBOARD_TEXT_ITEMS_JSON_NAME = "clipboard_text_items.json"
     const val CLIPBOARD_IMAGES_JSON_NAME = "clipboard_images.json"
     const val CLIPBOARD_VIDEO_JSON_NAME = "clipboard_video.json"
+
+    /** Name of the cache sub directory, must match the path declared in `res/xml/file_paths.xml`. */
+    private const val WORKSPACES_DIR_NAME = "backup-and-restore"
+
+    fun newWorkspace(context: Context): Workspace {
+        return Workspace(context.cacheDir.subDir(WORKSPACES_DIR_NAME).subDir(UUID.randomUUID().toString()))
+    }
+
+    /**
+     * Returns the serial type (`$` field of the manifest) of the extension in given [extDir], or null if the
+     * directory does not contain a readable extension manifest.
+     */
+    fun extensionSerialTypeOf(extDir: FsDir): String? {
+        return runCatching {
+            val manifest = extDir.subFile(ExtensionDefaults.MANIFEST_FILE_NAME).readText()
+            Json.parseToJsonElement(manifest).jsonObject["$"]?.jsonPrimitive?.content
+        }.getOrNull()
+    }
+
+    /**
+     * Returns the extension serial types which are covered by the selection of given [filesSelector].
+     */
+    fun selectedExtensionSerialTypes(filesSelector: FilesSelector): Set<String> {
+        return buildSet {
+            if (filesSelector.imeKeyboard) add(Keyboard3Extension.SERIAL_TYPE)
+            if (filesSelector.imeTheme) add(ThemeExtension.SERIAL_TYPE)
+        }
+    }
+
+    class Workspace(val dir: FsDir) : Closeable {
+        val inputDir: FsDir = dir.subDir("input")
+        val outputDir: FsDir = dir.subDir("output")
+
+        lateinit var zipFile: FsFile
+        lateinit var metadata: Metadata
+        var restoreWarningId: Int? = null
+        var restoreErrorId: Int? = null
+        var isLegacyFormat: Boolean = false
+
+        init {
+            inputDir.mkdirs()
+            outputDir.mkdirs()
+        }
+
+        fun isClosed() = !dir.exists()
+
+        override fun close() {
+            dir.deleteRecursively()
+        }
+    }
 
     fun defaultFileName(metadata: Metadata): String {
         return "backup_${metadata.packageName}_${metadata.versionCode}_${metadata.timestamp}.zip"
@@ -128,18 +197,26 @@ object Backup {
 }
 
 @Composable
-fun BackupScreen() {} /*= FlorisScreen {
+fun BackupScreen() = FlorisScreen {
     title = stringRes(R.string.backup_and_restore__back_up__title)
     previewFieldVisible = false
 
     val navController = LocalNavController.current
     val context = LocalContext.current
-    val cacheManager by context.cacheManager()
+    val interactionController = LocalInteractionController.current
     val scope = rememberCoroutineScope()
+    // Toasts must outlive this screen, as they are shown while navigating back
+    val toastScope = remember { CoroutineScope(Dispatchers.Main) }
 
     var backupDestination by remember { mutableStateOf(Backup.Destination.FILE_SYS) }
     val backupFilesSelector = remember { Backup.FilesSelector() }
-    var backupWorkspace: CacheManager.BackupAndRestoreWorkspace? = null
+    var backupWorkspace by remember { mutableStateOf<Backup.Workspace?>(null) }
+
+    fun showToast(resId: Int, vararg args: Pair<String, Any?>) {
+        toastScope.launch {
+            interactionController.showLongToast(context.getString(resId), *args)
+        }
+    }
 
     val backUpToFileSystemLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/zip"),
@@ -155,18 +232,18 @@ fun BackupScreen() {} /*= FlorisScreen {
                 context.contentResolver.writeFromFile(uri, backupWorkspace!!.zipFile)
                 backupWorkspace!!.close()
             }.onSuccess {
-                context.showLongToastSync(R.string.backup_and_restore__back_up__success)
+                showToast(R.string.backup_and_restore__back_up__success)
                 navController.popBackStack()
             }.onFailure { error ->
                 flogError { error.stackTraceToString() }
-                context.showLongToastSync(R.string.backup_and_restore__back_up__failure, "error_message" to error.message)
+                showToast(R.string.backup_and_restore__back_up__failure, "error_message" to error.message)
                 backupWorkspace = null
             }
         },
     )
 
-    suspend fun prepareBackupWorkspace() {
-        val workspace = cacheManager.backupAndRestore.new()
+    suspend fun prepareBackupWorkspace() = withContext(Dispatchers.IO) {
+        val workspace = Backup.newWorkspace(context)
         if (backupFilesSelector.jetprefDatastore) {
             val fileBasedStorage = workspace.inputDir
                 .subDir(AndroidAppDataStorage.JETPREF_DIR_NAME)
@@ -175,14 +252,15 @@ fun BackupScreen() {} /*= FlorisScreen {
             FlorisPreferenceStore.export(fileBasedStorage).getOrThrow()
         }
         val workspaceFilesDir = workspace.inputDir.subDir("files")
-        if (backupFilesSelector.imeKeyboard) {
-            context.filesDir.subDir(ExtensionManager.IME_KEYBOARD_PATH).let { dir ->
-                dir.copyRecursively(workspaceFilesDir.subDir(ExtensionManager.IME_KEYBOARD_PATH))
-            }
-        }
-        if (backupFilesSelector.imeTheme) {
-            context.filesDir.subDir(ExtensionManager.IME_THEME_PATH).let { dir ->
-                dir.copyRecursively(workspaceFilesDir.subDir(ExtensionManager.IME_THEME_PATH))
+        val extensionSerialTypes = Backup.selectedExtensionSerialTypes(backupFilesSelector)
+        if (extensionSerialTypes.isNotEmpty()) {
+            val extensionsDir = context.filesDir.subDir(ExtensionController.EXTENSIONS_PATH)
+            for (extDir in extensionsDir.listFiles().orEmpty()) {
+                if (extDir.isDirectory && Backup.extensionSerialTypeOf(extDir) in extensionSerialTypes) {
+                    extDir.copyRecursively(
+                        workspaceFilesDir.subDir(ExtensionController.EXTENSIONS_PATH).subDir(extDir.name)
+                    )
+                }
             }
         }
 
@@ -251,7 +329,7 @@ fun BackupScreen() {} /*= FlorisScreen {
             }
         }.onFailure { error ->
             flogError { error.stackTraceToString() }
-            context.showLongToast(R.string.backup_and_restore__back_up__failure, "error_message" to error.message)
+            showToast(R.string.backup_and_restore__back_up__failure, "error_message" to error.message)
             backupWorkspace = null
         }
     }
@@ -448,4 +526,3 @@ internal fun RadioListItem(
         secondaryText = secondaryText,
     )
 }
-*/

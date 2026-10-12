@@ -795,17 +795,22 @@ abstract class FlorisPreferenceModel : PreferenceModel() {
             // Migrate quick actions to K3Descriptors and insert missing actions
             // Keep migration rule until: forever
             "smartbar__action_arrangement" -> {
-                val arrangement = QuickActionJsonConfig.decodeFromString<QuickActionArrangement>(entry.rawValue)
-                var newArrangement = arrangement.migrateToK3Descriptors()
-                QuickActionArrangement.Default.forEach { defaultAction ->
-                    if (defaultAction !in newArrangement) {
-                        newArrangement = newArrangement.copy(
-                            dynamicActions = newArrangement.dynamicActions.plus(defaultAction),
-                        )
+                runCatching {
+                    val arrangement = QuickActionJsonConfig.decodeFromString<QuickActionArrangement>(entry.rawValue)
+                    var newArrangement = arrangement.migrateToK3Descriptors()
+                    QuickActionArrangement.Default.forEach { defaultAction ->
+                        if (defaultAction !in newArrangement) {
+                            newArrangement = newArrangement.copy(
+                                dynamicActions = newArrangement.dynamicActions.plus(defaultAction),
+                            )
+                        }
                     }
-                }
-                val json = QuickActionJsonConfig.encodeToString(newArrangement.distinct())
-                entry.transform(rawValue = json)
+                    QuickActionJsonConfig.encodeToString(newArrangement.distinct())
+                }.fold(
+                    onSuccess = { entry.transform(rawValue = it) },
+                    // An arrangement which cannot be read must not abort the whole import
+                    onFailure = { entry.reset() },
+                )
             }
 
             // Migrate theme editor fine-tuning

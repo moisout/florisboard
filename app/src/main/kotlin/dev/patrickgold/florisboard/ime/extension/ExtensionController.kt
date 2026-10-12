@@ -67,6 +67,13 @@ class ExtensionController(
         }
     }
 
+    /**
+     * Rebuilds the extension index, must be called after the extension files have been modified on disk.
+     */
+    suspend fun reindex() {
+        eventChannel.send(Event.Reindex)
+    }
+
     fun delete(extension: Extension<*>): Boolean {
         TODO()
     }
@@ -77,6 +84,7 @@ class ExtensionController(
 
     private sealed interface Event {
         data class ResetStorage(val newStorage: Storage) : Event
+        data object Reindex : Event
     }
 
     private class MutableIndex(initialStorage: Storage) {
@@ -98,6 +106,7 @@ class ExtensionController(
         suspend fun handle(event: Event) {
             when (event) {
                 is Event.ResetStorage -> handleResetStorage(event.newStorage)
+                is Event.Reindex -> handleResetStorage(storage)
             }
         }
 

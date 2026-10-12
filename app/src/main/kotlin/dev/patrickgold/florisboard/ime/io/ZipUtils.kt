@@ -16,10 +16,6 @@
 
 package dev.patrickgold.florisboard.ime.io
 
-import android.content.Context
-import android.net.Uri
-import org.florisboard.lib.android.copyRecursively
-import org.florisboard.lib.android.write
 import org.florisboard.lib.kotlin.io.FsDir
 import org.florisboard.lib.kotlin.io.FsFile
 import java.io.FileOutputStream
@@ -27,6 +23,88 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
 
+object ZipUtils {
+    fun zip(srcDir: FsDir, dstFile: FsFile) {
+        check(srcDir.exists() && srcDir.isDirectory) { "Cannot zip standalone file." }
+        dstFile.parentFile?.mkdirs()
+        dstFile.delete()
+        FileOutputStream(dstFile).use { outStream ->
+            ZipOutputStream(outStream).use { zipOut ->
+                zip(srcDir, zipOut, "")
+            }
+        }
+    }
+
+    internal fun zip(srcDir: FsDir, zipOut: ZipOutputStream, base: String) {
+        val dir = FsDir(srcDir, base)
+        for (file in dir.listFiles() ?: arrayOf()) {
+            val path = if (base.isBlank()) file.name else "$base/${file.name}"
+            if (file.isDirectory) {
+                zipOut.putNextEntry(ZipEntry("$path/"))
+                zipOut.closeEntry()
+                zip(srcDir, zipOut, path)
+            } else {
+                zipOut.putNextEntry(ZipEntry(path))
+                file.inputStream().use { it.copyTo(zipOut) }
+                zipOut.closeEntry()
+            }
+        }
+    }
+
+    /**
+     * Unzips a given Zip file to the destination directory.
+     *
+     * @param srcFile The source Zip file handle.
+     * @param dstDir The destination directory where the [srcFile] contents should be unzipped to.
+     *
+     * @throws IllegalArgumentException If the given [srcFile] is not existing on the file system or if it points to
+     *  a directory instead.
+     * @throws java.lang.SecurityException If the current file system does not permit an action.
+     * @throws java.util.zip.ZipException If a Zip format error has occurred.
+     * @throws java.io.IOException If an I/O error has occurred.
+     */
+    fun unzip(srcFile: FsFile, dstDir: FsDir) {
+        require(srcFile.exists() && srcFile.isFile) { "Given src file `$srcFile` is not valid or a directory." }
+        dstDir.mkdirs()
+        ZipFile(srcFile).use { flexFile ->
+            val flexEntries = flexFile.entries()
+            while (flexEntries.hasMoreElements()) {
+                val flexEntry = flexEntries.nextElement()
+                if (flexEntry.name.length > 255) {
+                    continue
+                }
+                val flexEntryFile = FsFile(dstDir, flexEntry.name)
+                val canonicalDestinationDirPath = dstDir.canonicalPath
+                val canonicalDestinationFilePath = flexEntryFile.canonicalPath
+                if (canonicalDestinationFilePath.length > 1023) {
+                    continue
+                }
+                if (!canonicalDestinationFilePath.startsWith(canonicalDestinationDirPath + FsFile.separator)) {
+                    continue
+                }
+                if (flexEntry.isDirectory) {
+                    flexEntryFile.mkdirs()
+                } else {
+                    flexEntryFile.parentFile?.mkdirs()
+                    flexFile.copy(flexEntry, flexEntryFile)
+                }
+            }
+        }
+    }
+
+    private fun ZipFile.copy(srcEntry: ZipEntry, dstFile: FsFile) {
+        dstFile.outputStream().use { outStream ->
+            if (srcEntry.size > 100000000) {
+                return
+            }
+            this.getInputStream(srcEntry).use { inStream ->
+                inStream.copyTo(outStream)
+            }
+        }
+    }
+}
+
+// TODO port the ref-based helpers below to the new storage API
 /*
 object ZipUtils {
     fun readFileFromArchive(context: Context, zipRef: FlorisRef, relPath: String) = runCatching<String> {
@@ -69,38 +147,11 @@ object ZipUtils {
         }
     }
 
-    fun zip(srcDir: FsDir, dstFile: FsFile) {
-        check(srcDir.exists() && srcDir.isDirectory) { "Cannot zip standalone file." }
-        dstFile.parentFile?.mkdirs()
-        dstFile.delete()
-        FileOutputStream(dstFile).use { outStream ->
-            ZipOutputStream(outStream).use { zipOut ->
-                zip(srcDir, zipOut, "")
-            }
-        }
-    }
-
     fun zip(context: Context, srcDir: FsDir, uri: Uri) = runCatching {
         check(srcDir.exists() && srcDir.isDirectory) { "Cannot zip standalone file." }
         context.contentResolver.write(uri) { fileOut ->
             ZipOutputStream(fileOut).use { zipOut ->
                 zip(srcDir, zipOut, "")
-            }
-        }
-    }
-
-    internal fun zip(srcDir: FsDir, zipOut: ZipOutputStream, base: String) {
-        val dir = FsDir(srcDir, base)
-        for (file in dir.listFiles() ?: arrayOf()) {
-            val path = if (base.isBlank()) file.name else "$base/${file.name}"
-            if (file.isDirectory) {
-                zipOut.putNextEntry(ZipEntry("$path/"))
-                zipOut.closeEntry()
-                zip(srcDir, zipOut, path)
-            } else {
-                zipOut.putNextEntry(ZipEntry(path))
-                file.inputStream().use { it.copyTo(zipOut) }
-                zipOut.closeEntry()
             }
         }
     }
@@ -123,55 +174,5 @@ object ZipUtils {
         }
     }
 
-    /**
-     * Unzips a given Zip file to the destination directory.
-     *
-     * @param srcFile The source Zip file handle.
-     * @param dstDir The destination directory where the [srcFile] contents should be unzipped to.
-     *
-     * @throws IllegalArgumentException If the given [srcFile] is not existing on the file system or if it points to
-     *  a directory instead.
-     * @throws java.lang.SecurityException If the current file system does not permit an action.
-     * @throws java.util.zip.ZipException If a Zip format error has occurred.
-     * @throws java.io.IOException If an I/O error has occurred.
-     */
-    fun unzip(srcFile: FsFile, dstDir: FsDir) {
-        require(srcFile.exists() && srcFile.isFile) { "Given src file `$srcFile` is not valid or a directory." }
-        dstDir.mkdirs()
-        ZipFile(srcFile).use { flexFile ->
-            val flexEntries = flexFile.entries()
-            while (flexEntries.hasMoreElements()) {
-                val flexEntry = flexEntries.nextElement()
-                if (flexEntry.name.length > 255) {
-                    continue
-                }
-                val flexEntryFile = FsFile(dstDir, flexEntry.name)
-                val canonicalDestinationDirPath = dstDir.canonicalPath
-                val canonicalDestinationFilePath = flexEntryFile.canonicalPath
-                if (canonicalDestinationFilePath.length > 1023) {
-                    continue
-                }
-                if (!canonicalDestinationFilePath.startsWith(canonicalDestinationDirPath + FsFile.separator)) {
-                    continue
-                }
-                if (flexEntry.isDirectory) {
-                    flexEntryFile.mkdir()
-                } else {
-                    flexFile.copy(flexEntry, flexEntryFile)
-                }
-            }
-        }
-    }
-
-    private fun ZipFile.copy(srcEntry: ZipEntry, dstFile: FsFile) {
-        dstFile.outputStream().use { outStream ->
-            if (srcEntry.size > 100000000) {
-                return
-            }
-            this.getInputStream(srcEntry).use { inStream ->
-                inStream.copyTo(outStream)
-            }
-        }
-    }
 }
  */
