@@ -44,6 +44,7 @@ import dev.patrickgold.florisboard.ime.media.emoji.EmojiSuggestionType
 import dev.patrickgold.florisboard.ime.nlp.BreakIterators
 import dev.patrickgold.florisboard.ime.nlp.ClipboardSuggestionCandidate
 import dev.patrickgold.florisboard.ime.nlp.SuggestionCandidate
+import dev.patrickgold.florisboard.ime.text.gestures.SwipeAction
 import dev.patrickgold.florisboard.ime.text.key.KeyVariation
 import dev.patrickgold.florisboard.lib.FlorisLocale
 import dev.patrickgold.florisboard.lib.devtools.flogDebug
@@ -512,6 +513,107 @@ class ImeController(
             return false
         }
 
+        fun emitSwipeAction(action: SwipeAction) {
+            when (action) {
+                SwipeAction.DELETE_CHARACTER -> emitBackspace()
+                SwipeAction.DELETE_WORD -> emitDescriptor(ImeActions.BackspaceWord)
+                SwipeAction.HIDE_KEYBOARD -> emitDescriptor(ImeActions.HideImeWindow)
+                SwipeAction.INSERT_SPACE -> emitText(SPACE_SEQ)
+                SwipeAction.MOVE_CURSOR_UP -> emitDescriptor(ImeActions.ArrowUp)
+                SwipeAction.MOVE_CURSOR_DOWN -> emitDescriptor(ImeActions.ArrowDown)
+                SwipeAction.MOVE_CURSOR_LEFT -> emitDescriptor(ImeActions.ArrowLeft)
+                SwipeAction.MOVE_CURSOR_RIGHT -> emitDescriptor(ImeActions.ArrowRight)
+                SwipeAction.REDO -> emitDescriptor(ImeActions.Redo)
+                SwipeAction.UNDO -> emitDescriptor(ImeActions.Undo)
+                SwipeAction.SHIFT -> cycleInputShiftState(isDoubleTap = false)
+                SwipeAction.SHOW_INPUT_METHOD_PICKER -> emitDescriptor(ImeActions.ShowInputMethodPicker)
+                SwipeAction.SHOW_SUBTYPE_PICKER -> emitDescriptor(ImeActions.ShowSubtypePicker)
+                SwipeAction.SWITCH_TO_PREV_SUBTYPE -> emitDescriptor(ImeActions.SwitchToPrevSubtype)
+                SwipeAction.SWITCH_TO_NEXT_SUBTYPE -> emitDescriptor(ImeActions.SwitchToNextSubtype)
+                SwipeAction.SWITCH_TO_CLIPBOARD_CONTEXT -> emitDescriptor(ImeActions.ShowClipboardPanel)
+                SwipeAction.SWITCH_TO_MEDIA_CONTEXT -> emitDescriptor(ImeActions.ShowMediaPanel)
+                SwipeAction.SWITCH_TO_PREV_KEYBOARD -> emitDescriptor(ImeActions.SwitchToPrevInputMethod)
+                SwipeAction.TOGGLE_COMPACT_LAYOUT -> emitDescriptor(ImeActions.ToggleCompactLayout)
+                // TODO not supported by the keyboard3 engine yet
+                SwipeAction.NO_ACTION,
+                SwipeAction.CYCLE_TO_PREVIOUS_KEYBOARD_MODE,
+                SwipeAction.CYCLE_TO_NEXT_KEYBOARD_MODE,
+                SwipeAction.DELETE_CHARACTERS_PRECISELY,
+                SwipeAction.DELETE_WORDS_PRECISELY,
+                SwipeAction.MOVE_CURSOR_START_OF_LINE,
+                SwipeAction.MOVE_CURSOR_END_OF_LINE,
+                SwipeAction.MOVE_CURSOR_START_OF_PAGE,
+                SwipeAction.MOVE_CURSOR_END_OF_PAGE,
+                SwipeAction.SELECT_CHARACTERS_PRECISELY,
+                SwipeAction.SELECT_WORDS_PRECISELY,
+                SwipeAction.TOGGLE_SMARTBAR_VISIBILITY -> {}
+            }
+        }
+
+        /**
+         * Begins a precise selection, which grows from the current selection towards the start of the text. Returns
+         * null if the editor does not support it.
+         */
+        fun beginPreciseSelection(): PreciseSelection? {
+            if (state.editor.info.isRawInputEditor) return null
+            val selection = state.content.selection
+            return PreciseSelection(
+                base = minOf(selection.start, selection.end),
+                end = maxOf(selection.start, selection.end),
+                textBefore = state.editor.getSurroundingText(PRECISE_SELECTION_MAX_LENGTH, 0).textBefore,
+            )
+        }
+
+        /**
+         * Extends given [selection] so that it covers [count] units before its base.
+         */
+        fun updatePreciseSelection(selection: PreciseSelection, count: Int, unit: OperationUnit) {
+            state.editor.setSelection(selection.startFor(count, unit), selection.end)
+        }
+
+        /**
+         * Deletes the text covered by given [selection], extended by [count] units before its base.
+         */
+        fun deletePreciseSelection(selection: PreciseSelection, count: Int, unit: OperationUnit) {
+            val start = selection.startFor(count, unit)
+            if (start < selection.end) {
+                state.editor.deleteRange(start, selection.end)
+            }
+        }
+
+        private fun PreciseSelection.startFor(count: Int, unit: OperationUnit): Int {
+            // TODO rework how we get the primary locale
+            val locale = FlorisLocale.fromTag(state.model.locales.getOrElse(0) { "" })
+            val length = when (unit) {
+                OperationUnit.CHARACTERS -> breakIterators.character(locale) { iterator ->
+                    iterator.setText(textBefore)
+                    var pos = iterator.last()
+                    repeat(count) {
+                        val prevPos = iterator.previous()
+                        if (prevPos == BreakIterator.DONE) return@repeat
+                        pos = prevPos
+                    }
+                    textBefore.length - pos
+                }
+                OperationUnit.WORDS -> breakIterators.word(locale) { iterator ->
+                    iterator.setText(textBefore)
+                    var pos = iterator.last()
+                    repeat(count) {
+                        // A unit is a word including the whitespace and punctuation which follows it
+                        while (true) {
+                            val prevPos = iterator.previous()
+                            if (prevPos == BreakIterator.DONE) break
+                            val isWord = textBefore.substring(prevPos, pos).any { c -> c.isLetterOrDigit() }
+                            pos = prevPos
+                            if (isWord) break
+                        }
+                    }
+                    textBefore.length - pos
+                }
+            }
+            return (base - length).coerceAtLeast(0)
+        }
+
         override fun switchTouchLayer(newTouchLayerId: K3LayerId) {
             if (newTouchLayerId.isTextLayer()) {
                 super.switchTouchLayer(state.flags.inputShiftState.correspondingLayerId)
@@ -622,8 +724,23 @@ class ImeController(
 
     companion object {
         private val NEWLINE_SEQ = "\n".asK3String()
+        private val SPACE_SEQ = " ".asK3String()
+        private const val PRECISE_SELECTION_MAX_LENGTH = 1024
     }
 }
+
+/**
+ * Describes a selection which is extended step by step towards the start of the text, e.g. by swiping.
+ *
+ * @property base The start of the selection at the time the precise selection began.
+ * @property end The end of the selection, which stays fixed.
+ * @property textBefore The text before [base], used to find the unit boundaries.
+ */
+data class PreciseSelection(
+    val base: Int,
+    val end: Int,
+    val textBefore: String,
+)
 
 enum class OperationUnit {
     CHARACTERS,
