@@ -80,6 +80,8 @@ configure<ApplicationExtension> {
         buildConfigField("String", "BUILD_COMMIT_HASH", "\"${getGitCommitHash().get()}\"")
         buildConfigField("String", "FLADDONS_API_VERSION", "\"v~draft2\"")
         buildConfigField("String", "FLADDONS_STORE_URL", "\"beta.addons.florisboard.org\"")
+        // Optional API key of the GIF provider, without it the GIF panel is not available
+        buildConfigField("String", "KLIPY_API_KEY", "\"${localProperties.getProperty("klipy.apiKey", "")}\"")
 
         sourceSets {
             maybeCreate("main").apply {
@@ -225,6 +227,8 @@ dependencies {
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.window.core)
     implementation(libs.cache4k)
+    implementation(libs.coil.compose)
+    implementation(libs.coil.gif)
     implementation(libs.k3lp.core)
     implementation(libs.kotlin.reflect)
     implementation(libs.kotlinx.coroutines)

@@ -3,4 +3,7 @@
     <cache-path
         name="workspaces"
         path="workspaces/"/>
+    <cache-path
+        name="gifs"
+        path="gifs/"/>
 </paths>
