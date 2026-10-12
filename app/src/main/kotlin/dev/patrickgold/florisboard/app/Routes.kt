@@ -16,18 +16,31 @@
 
 package dev.patrickgold.florisboard.app
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContentScope
-import androidx.compose.animation.EnterTransition
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleOut
-import androidx.compose.animation.slideIn
-import androidx.compose.animation.slideOut
+import androidx.compose.animation.AnimatedContentTransitionScope.SlideDirection
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.composed
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.unit.IntOffset
 import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavGraphBuilder
@@ -79,11 +92,53 @@ import dev.patrickgold.florisboard.app.settings.typing.TypingScreen
 import dev.patrickgold.florisboard.app.setup.SetupScreen
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.reflect.KClass
 
 @Target(AnnotationTarget.CLASS)
 @Retention(AnnotationRetention.RUNTIME)
 annotation class Deeplink(val path: String)
+
+private const val NAV_ANIMATION_DURATION_MILLIS = 400
+private const val NAV_PREDICTIVE_DURATION_MILLIS = 220
+private const val NAV_PARALLAX_FRACTION = 0.3f
+private const val NAV_MAX_DIM_ALPHA = 0.2f
+// Starts fast and settles slowly, like the page transitions of iOS and ColorOS
+private val NavAnimationEasing = CubicBezierEasing(0.2f, 0.8f, 0.2f, 1f)
+private val NavAnimationSpec = tween<IntOffset>(NAV_ANIMATION_DURATION_MILLIS, easing = NavAnimationEasing)
+// During the predictive back gesture the progress of the transition is set by the finger. It must be mapped
+// linearly, else the screen would run ahead of the finger. The duration only matters once the finger is lifted,
+// the rest of the transition then takes the remaining share of it.
+private val NavPredictiveAnimationSpec = tween<IntOffset>(NAV_PREDICTIVE_DURATION_MILLIS, easing = LinearEasing)
+
+// The left edge of the navigation host within the root, required to tell how far a screen has slid in
+private var navHostLeft by mutableFloatStateOf(0f)
+
+/**
+ * Dims the screen below this one while this screen slides over it: draws a scrim next to the trailing edge of this
+ * screen, which gets lighter the further this screen has slid out.
+ */
+fun Modifier.dimScreenBelowWhileSliding(): Modifier = composed {
+    val isRtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+    var left by remember { mutableFloatStateOf(0f) }
+    this
+        .onGloballyPositioned { left = it.positionInRoot().x }
+        .drawWithContent {
+            // How far this screen is away from its resting position, towards the edge it slides in from
+            val distance = (left - navHostLeft).let { if (isRtl) -it else it }
+            if (distance > 0.5f && size.width > 0f) {
+                val alpha = NAV_MAX_DIM_ALPHA * (1f - distance / size.width).coerceIn(0f, 1f)
+                drawRect(
+                    color = Color.Black.copy(alpha = alpha),
+                    topLeft = Offset(if (isRtl) size.width else -size.width, 0f),
+                    size = size,
+                )
+            }
+            drawContent()
+        }
+}
 
 inline fun <reified T : Any> NavGraphBuilder.composableWithDeepLink(
     kClass: KClass<T>,
@@ -94,8 +149,11 @@ inline fun <reified T : Any> NavGraphBuilder.composableWithDeepLink(
     }
     composable<T>(
         deepLinks = listOf(navDeepLink<T>(basePath = "ui://florisboard/${deeplink.path}")),
-        content = content,
-    )
+    ) { navBackStackEntry ->
+        Box(modifier = Modifier.fillMaxSize().dimScreenBelowWhileSliding()) {
+            content(navBackStackEntry)
+        }
+    }
 }
 
 object Routes {
@@ -261,21 +319,32 @@ object Routes {
         startDestination: KClass<*>,
     ) {
         NavHost(
-            modifier = modifier,
+            modifier = modifier.onGloballyPositioned { navHostLeft = it.positionInRoot().x },
             navController = navController,
             startDestination = startDestination,
+            // Horizontal slides in the style of iOS and ColorOS, which follow the layout direction: a new screen
+            // slides in over the previous one, which moves aside by a third and gets dimmed, and going back
+            // reverses this. The predictive back gesture uses the same slides without easing, so the screen follows
+            // the finger.
             enterTransition = {
-                slideIn { IntOffset(it.width, 0) } + fadeIn()
+                slideIntoContainer(SlideDirection.Start, NavAnimationSpec)
             },
             exitTransition = {
-                slideOut { IntOffset(-it.width, 0) } + fadeOut()
+                slideOutOfContainer(SlideDirection.Start, NavAnimationSpec) { (it * NAV_PARALLAX_FRACTION).toInt() }
             },
-            popEnterTransition = { EnterTransition.None },
+            popEnterTransition = {
+                slideIntoContainer(SlideDirection.End, NavAnimationSpec) { (it * NAV_PARALLAX_FRACTION).toInt() }
+            },
             popExitTransition = {
-                scaleOut(
-                    targetScale = 0.85F,
-                    transformOrigin = TransformOrigin(pivotFractionX = 0.8f, pivotFractionY = 0.5f)
-                ) + fadeOut(spring(stiffness = Spring.StiffnessMedium))
+                slideOutOfContainer(SlideDirection.End, NavAnimationSpec)
+            },
+            predictivePopEnterTransition = {
+                slideIntoContainer(SlideDirection.End, NavPredictiveAnimationSpec) {
+                    (it * NAV_PARALLAX_FRACTION).toInt()
+                }
+            },
+            predictivePopExitTransition = {
+                slideOutOfContainer(SlideDirection.End, NavPredictiveAnimationSpec)
             },
         ) {
             composable<Setup.Screen> { SetupScreen() }
@@ -369,6 +438,30 @@ object Routes {
             }
             composableWithDeepLink(Ext.CheckUpdates::class) {
                 CheckUpdatesScreen()
+            }
+        }
+
+        // The navigation host cannot start a back gesture while another transition is still running, the screens
+        // would jump. A back gesture during a transition is thus not animated by the finger, but queued and
+        // executed as a regular back navigation once the running transition has finished. As this handler is
+        // registered after the one of the navigation host, it takes precedence while it is enabled.
+        val visibleEntries by navController.visibleEntries.collectAsState()
+        val scope = rememberCoroutineScope()
+        var isBackQueued by remember { mutableStateOf(false) }
+        BackHandler(enabled = visibleEntries.size > 1) {
+            if (isBackQueued) return@BackHandler
+            isBackQueued = true
+            scope.launch {
+                try {
+                    withTimeoutOrNull(NAV_ANIMATION_DURATION_MILLIS * 2L) {
+                        navController.visibleEntries.first { it.size <= 1 }
+                    }
+                    if (navController.previousBackStackEntry != null) {
+                        navController.popBackStack()
+                    }
+                } finally {
+                    isBackQueued = false
+                }
             }
         }
     }
