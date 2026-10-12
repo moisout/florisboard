@@ -75,7 +75,7 @@ fun DevtoolsScreen() {
             )
 
             SegmentedListColumn(title = stringRes(R.string.devtools__title)) {
-                val count = 13
+                val count = 12
                 SwitchPreference(
                     prefs.devtools.showPrimaryClip,
                     shapes = ListItemDefaults.segmentedShapes(0, count),
@@ -166,13 +166,6 @@ fun DevtoolsScreen() {
                     title = "prefs.glide.enabled (debug)",
                     summaryOn = "This impacts your performance and may trigger the all keys invisible bug!",
                     summaryOff = "Recommended to keep this off!",
-                    enabledIf = { prefs.devtools.enabled isEqualTo true },
-                )
-                SwitchPreference(
-                    prefs.emoji.experimentalEmojiSearchEnabled,
-                    shapes = ListItemDefaults.segmentedShapes(12, count),
-                    title = "prefs.emoji.experimentalEmojiSearchEnabled",
-                    summary = "Enables the technical PoC UI of emoji search. No proper UX yet!",
                     enabledIf = { prefs.devtools.enabled isEqualTo true },
                 )
             }

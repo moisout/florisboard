@@ -28,6 +28,7 @@ import android.util.Size
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.view.inputmethod.CursorAnchorInfo
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InlineSuggestionsRequest
@@ -296,6 +297,9 @@ class FlorisImeService : LifecycleInputMethodService() {
         windowController.activeWindowConfig.collectLatestIn(lifecycleScope) {
             // TODO update inputMethod state
         }
+        windowController.activeModalOverlay.collectIn(lifecycleScope) { modalOverlay ->
+            setImeWindowFocusable(modalOverlay != null)
+        }
 
         combine(
             systemLocalesFlow,
@@ -511,6 +515,29 @@ class FlorisImeService : LifecycleInputMethodService() {
         return NlpInlineAutofill.showInlineSuggestions(this, inlineSuggestions)
     }
 
+    /**
+     * Makes the IME window take the window focus away from the app, which stops the cursor of the app from
+     * blinking and routes the back key to the IME. [WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM] tells the
+     * system that the focused IME window itself does not need an input method, so the IME stays connected to
+     * the editor of the app.
+     */
+    private fun setImeWindowFocusable(focusable: Boolean) {
+        val window = window.window ?: return
+        val mask = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM
+        if (focusable) {
+            if (imeWindowFocusFlagsToRestore == null) {
+                imeWindowFocusFlagsToRestore = window.attributes.flags and mask
+            }
+            window.setFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM, mask)
+        } else {
+            // Only restore what has been changed before, the flags are owned by the system otherwise
+            imeWindowFocusFlagsToRestore?.let { window.setFlags(it, mask) }
+            imeWindowFocusFlagsToRestore = null
+        }
+    }
+
+    private var imeWindowFocusFlagsToRestore: Int? = null
+
     override fun onComputeInsets(outInsets: Insets?) {
         if (outInsets == null) return
         val imeState = imeController.snapshotState()
@@ -536,11 +563,17 @@ class FlorisImeService : LifecycleInputMethodService() {
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         flogDebug { "onKeyDown(keyCode=$keyCode, event=$event)" }
+        if (keyCode == KeyEvent.KEYCODE_BACK && windowController.activeModalOverlay.value != null) {
+            return true
+        }
         return imeController.onHardwareKeyDown(keyCode, event) || super.onKeyDown(keyCode, event)
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
         flogDebug { "onKeyUp(keyCode=$keyCode, event=$event)" }
+        if (keyCode == KeyEvent.KEYCODE_BACK && windowController.dismissModalOverlay()) {
+            return true
+        }
         return imeController.onHardwareKeyUp(keyCode, event) || super.onKeyUp(keyCode, event)
     }
 }

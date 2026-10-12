@@ -33,7 +33,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import dev.patrickgold.florisboard.app.FlorisPreferenceStore
+import dev.patrickgold.florisboard.R
 import dev.patrickgold.florisboard.ime.keyboard.FlorisImeSizing
 import dev.patrickgold.florisboard.ime.keyboard3.ImeActions
 import dev.patrickgold.florisboard.ime.keyboard3.ui.ImeKeyButton
@@ -41,7 +41,7 @@ import dev.patrickgold.florisboard.ime.media.emoji.EmojiData
 import dev.patrickgold.florisboard.ime.media.emoji.EmojiPaletteView
 import dev.patrickgold.florisboard.ime.media.emoji.EmojiSearchLayout
 import dev.patrickgold.florisboard.ime.theme.FlorisImeUi
-import dev.patrickgold.jetpref.datastore.model.collectAsState
+import org.florisboard.lib.compose.stringRes
 import org.florisboard.lib.snygg.ui.SnyggButton
 import org.florisboard.lib.snygg.ui.SnyggColumn
 import org.florisboard.lib.snygg.ui.SnyggIcon
@@ -53,7 +53,6 @@ import org.florisboard.lib.snygg.ui.SnyggText
 fun MediaInputLayout(
     modifier: Modifier = Modifier,
 ) {
-    val prefs by FlorisPreferenceStore
     val context = LocalContext.current
 
     var emojiLayoutDataMap by remember { mutableStateOf(EmojiData.Fallback) }
@@ -63,13 +62,14 @@ fun MediaInputLayout(
 
     var isEmojiSearch by remember { mutableStateOf(false) }
     if (isEmojiSearch) {
-        EmojiSearchLayout()
+        EmojiSearchLayout(onDismiss = { isEmojiSearch = false })
     } else {
         SnyggColumn(
             elementName = FlorisImeUi.Media.elementName,
             modifier = modifier
                 .fillMaxWidth()
-                .height(FlorisImeSizing.imeUiHeight()),
+                // The emoji palette is a bit taller than the keyboard to show more emojis at once
+                .height(FlorisImeSizing.imeUiHeight() + FlorisImeSizing.keyboardRowBaseHeight * 0.75f),
         ) {
             EmojiPaletteView(
                 modifier = Modifier.weight(1f),
@@ -87,22 +87,18 @@ fun MediaInputLayout(
                     modifier = Modifier.fillMaxHeight(),
                 )
                 Spacer(modifier = Modifier.weight(1f))
-                // TODO no feature gate once emoji search PR is implemented!
-                val experimentalEmojiSearch by prefs.emoji.experimentalEmojiSearchEnabled.collectAsState()
-                if (experimentalEmojiSearch) {
-                    SnyggButton(
-                        modifier = Modifier
-                            .minimumInteractiveComponentSize()
-                            .align(Alignment.CenterVertically),
-                        onClick = { isEmojiSearch = true },
-                    ) {
-                        SnyggIcon(
-                            imageVector = Icons.Default.Search,
-                        )
-                        SnyggText(
-                            text = "Search",
-                        )
-                    }
+                SnyggButton(
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .align(Alignment.CenterVertically),
+                    onClick = { isEmojiSearch = true },
+                ) {
+                    SnyggIcon(
+                        imageVector = Icons.Default.Search,
+                    )
+                    SnyggText(
+                        text = stringRes(R.string.emoji__search__action),
+                    )
                 }
                 Spacer(modifier = Modifier.weight(1f))
                 ImeKeyButton(

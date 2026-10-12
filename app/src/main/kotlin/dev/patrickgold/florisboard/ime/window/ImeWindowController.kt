@@ -45,6 +45,13 @@ import org.florisboard.lib.kotlin.collectIn
  *  config is written to.
  * @property scope The coroutine scope in which suspending operations and flow collection should run in.
  */
+/**
+ * A modal overlay of the IME window, see [ImeWindowController.activeModalOverlay].
+ *
+ * @property onDismiss Called if the user taps the scrim, presses back or the IME window gets hidden.
+ */
+class ImeModalOverlay(val onDismiss: () -> Unit)
+
 class ImeWindowController(
     private val prefs: FlorisPreferenceModel,
     val scope: CoroutineScope,
@@ -98,6 +105,31 @@ class ImeWindowController(
     /**
      * Holds the state if the window is currently shown to the user, as reported by the IME service class.
      */
+    /**
+     * The modal overlay which is currently shown, if any. While a modal overlay is active, the area outside of the
+     * IME window is covered by a scrim and belongs to the IME, so the app behind can neither be used nor seen
+     * clearly.
+     */
+    val activeModalOverlay: StateFlow<ImeModalOverlay?>
+        field = MutableStateFlow(null)
+
+    fun showModalOverlay(overlay: ImeModalOverlay) {
+        activeModalOverlay.value = overlay
+    }
+
+    fun hideModalOverlay(overlay: ImeModalOverlay) {
+        activeModalOverlay.compareAndSet(expect = overlay, update = null)
+    }
+
+    /**
+     * Dismisses the active modal overlay, if there is one. Returns true if a modal overlay was dismissed.
+     */
+    fun dismissModalOverlay(): Boolean {
+        val overlay = activeModalOverlay.value ?: return false
+        overlay.onDismiss()
+        return true
+    }
+
     val isWindowShown: StateFlow<Boolean>
         field = MutableStateFlow(false)
 
@@ -223,7 +255,7 @@ class ImeWindowController(
             }
         }
         when {
-            isFullscreenInputRequired || editorState.isEnabled -> {
+            isFullscreenInputRequired || editorState.isEnabled || activeModalOverlay.value != null -> {
                 outInsets.touchableRegion.set(
                     rootBounds.left,
                     rootBounds.top,
@@ -254,6 +286,7 @@ class ImeWindowController(
 
     fun onWindowHidden(): Boolean {
         editor.disable()
+        dismissModalOverlay()
         return isWindowShown.compareAndSet(expect = true, update = false)
     }
 
