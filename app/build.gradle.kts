@@ -17,6 +17,7 @@
 import com.android.build.api.dsl.ApplicationExtension
 import org.gradle.api.tasks.testing.logging.TestLogEvent
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.agp.application)
@@ -35,6 +36,11 @@ val projectVersionNameSuffix = projectVersionName.substringAfter("-", "").let { 
     } else {
         suffix
     }
+}
+
+// Optional personal signing config, read from the gitignored local.properties file
+val localProperties = Properties().apply {
+    rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
 }
 
 kotlin {
@@ -79,6 +85,11 @@ configure<ApplicationExtension> {
             maybeCreate("main").apply {
                 assets.directories += "src/main/assets"
             }
+            if (localProperties.getProperty("signing.storeFile") != null) {
+                maybeCreate("release").apply {
+                    res.directories += "src/debug/res"
+                }
+            }
         }
     }
 
@@ -94,6 +105,17 @@ configure<ApplicationExtension> {
     buildFeatures {
         buildConfig = true
         compose = true
+    }
+
+    signingConfigs {
+        localProperties.getProperty("signing.storeFile")?.let { path ->
+            create("personal") {
+                storeFile = rootProject.file(path)
+                storePassword = localProperties.getProperty("signing.storePassword")
+                keyAlias = localProperties.getProperty("signing.keyAlias")
+                keyPassword = localProperties.getProperty("signing.keyPassword")
+            }
+        }
     }
 
     buildTypes {
@@ -116,6 +138,12 @@ configure<ApplicationExtension> {
 
         named("release") {
             versionNameSuffix = projectVersionNameSuffix
+            // Personal builds are optimized like a release build, but use the debug identity
+            signingConfigs.findByName("personal")?.let { personal ->
+                signingConfig = personal
+                applicationIdSuffix = ".debug"
+                versionNameSuffix = "$projectVersionNameSuffix+${getGitCommitHash(short = true).get()}"
+            }
 
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             isMinifyEnabled = true
