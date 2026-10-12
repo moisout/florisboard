@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.systemGestureExclusion
+import androidx.compose.foundation.background
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -122,9 +123,29 @@ fun ImeRootWindow() {
             },
     ) {
         DevtoolsOverlay()
+        ModalOverlayScrim()
         ImeWindow()
         BottomSheetWindow()
         ImeSystemUi()
+    }
+}
+
+@Composable
+private fun ModalOverlayScrim() {
+    val windowController = LocalWindowController.current
+    val modalOverlay by windowController.activeModalOverlay.collectAsState()
+
+    if (modalOverlay != null) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.5f))
+                .pointerInput(Unit) {
+                    detectTapGestures {
+                        windowController.dismissModalOverlay()
+                    }
+                },
+        )
     }
 }
 
