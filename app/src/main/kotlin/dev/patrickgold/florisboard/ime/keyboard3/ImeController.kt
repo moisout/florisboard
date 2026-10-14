@@ -63,8 +63,11 @@ import org.florisboard.lib.kotlin.collectIn
 import org.k3lp.lib.text.K3Descriptor
 import org.k3lp.lib.text.K3String
 import org.k3lp.lib.text.asK3String
+import org.k3lp.lib.text.normalize
+import org.k3lp.lib.text.unicode.NormalizationForm
 import org.k3lp.model.K3Model
 import org.k3lp.model.layer.K3LayerId
+import org.k3lp.model.transform.K3Transforms
 import org.k3lp.runtime.K3Content
 import org.k3lp.runtime.K3InputMethod
 import org.k3lp.runtime.K3SurroundingText
@@ -401,8 +404,51 @@ class ImeController(
         }
 
         override fun emitBackspace() {
-            super.emitBackspace()
+            if (!emitBackspaceOnPrecomposedChar()) {
+                super.emitBackspace()
+            }
             expectedContentQueue.push(state.content)
+        }
+
+        /**
+         * k3lp evaluates backspace on the NFD form of the text before the caret, so without backspace transforms
+         * a precomposed character like "ü" would only lose its combining mark. Deletes such a character as a whole.
+         *
+         * @return True if the backspace has been handled, false if it should be passed on to k3lp.
+         */
+        private fun emitBackspaceOnPrecomposedChar(): Boolean {
+            val content = state.content
+            if (content.selection.isNotCollapsed()) return false
+            if (!state.model.transforms.byType[K3Transforms.Type.BACKSPACE].isNullOrEmpty()) return false
+            val textBefore = content.surroundingText.textBefore
+            if (textBefore.isEmpty()) return false
+            val codePoint = textBefore.codePointBefore(textBefore.length)
+            val decomposed = String(Character.toChars(codePoint)).normalize(NormalizationForm.NFD)
+            // Only intervene for base + combining marks, e.g. leave Hangul syllables to k3lp's per-jamo deletion
+            if (decomposed.codePointCount(0, decomposed.length) < 2) return false
+            if (Character.getType(decomposed.codePointBefore(decomposed.length)) != Character.NON_SPACING_MARK.toInt()) {
+                return false
+            }
+            val newSurroundingText = content.surroundingText.copy(
+                textBefore = textBefore.substring(0, textBefore.length - Character.charCount(codePoint)),
+            )
+            val newSelection = K3TextRange(content.offset + newSurroundingText.textBefore.length)
+            val newComposition = evaluateCompositionOf(state.model, newSelection, newSurroundingText)
+            state = state.copy(
+                content = content.copy(
+                    selection = newSelection,
+                    composition = newComposition,
+                    surroundingText = newSurroundingText,
+                    inputContext = newSurroundingText.textBefore.asK3String().normalize(NormalizationForm.NFD),
+                ),
+            )
+            state.editor.replaceText(
+                range = newSelection.start until content.selection.min,
+                text = "",
+                newSelection = newSelection,
+                newComposition = newComposition,
+            )
+            return true
         }
 
         override fun emitEnter() {
