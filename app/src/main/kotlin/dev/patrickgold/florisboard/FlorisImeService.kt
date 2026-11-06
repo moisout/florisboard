@@ -283,6 +283,12 @@ class FlorisImeService : LifecycleInputMethodService() {
 
     private val wallpaperChangeReceiver = WallpaperChangeReceiver()
 
+    /**
+     * True once the current editor has reported a selection in its cursor anchor info. Some editors, e.g. Firefox,
+     * never do and leave it at -1, for these the selection reported by [onUpdateSelection] is used instead.
+     */
+    private var isSelectionInCursorAnchorInfo = false
+
     init {
         setTheme(R.style.FlorisImeTheme)
     }
@@ -380,6 +386,7 @@ class FlorisImeService : LifecycleInputMethodService() {
         flogInfo { "info=${info?.debugSummarize()} restarting=$restarting" }
         super.onStartInputView(info, restarting)
         if (info == null) return
+        isSelectionInCursorAnchorInfo = false
         currentInputConnection?.requestCursorUpdates(ImeEditor.CURSOR_UPDATES)
         val ic = WeakReference(currentInputConnection)
         val editorInfo = FlorisEditorInfo.wrap(info)
@@ -399,6 +406,11 @@ class FlorisImeService : LifecycleInputMethodService() {
         if (cursorAnchorInfo == null) {
             return
         }
+        // A selection of -1 means the editor does not provide it, it must not be taken as the cursor position
+        if (cursorAnchorInfo.selectionStart < 0 || cursorAnchorInfo.selectionEnd < 0) {
+            return
+        }
+        isSelectionInCursorAnchorInfo = true
         val newSelection = K3TextRange(
             start = cursorAnchorInfo.selectionStart,
             end = cursorAnchorInfo.selectionEnd,
@@ -406,6 +418,23 @@ class FlorisImeService : LifecycleInputMethodService() {
         flogInfo { "new=$newSelection" }
         imeController.updateStateBlocking {
             handleUpdateSelection(newSelection)
+        }
+    }
+
+    override fun onUpdateSelection(
+        oldSelStart: Int,
+        oldSelEnd: Int,
+        newSelStart: Int,
+        newSelEnd: Int,
+        candidatesStart: Int,
+        candidatesEnd: Int,
+    ) {
+        super.onUpdateSelection(oldSelStart, oldSelEnd, newSelStart, newSelEnd, candidatesStart, candidatesEnd)
+        if (isSelectionInCursorAnchorInfo || newSelStart < 0 || newSelEnd < 0) {
+            return
+        }
+        imeController.updateStateBlocking {
+            handleUpdateSelection(K3TextRange(start = newSelStart, end = newSelEnd))
         }
     }
 

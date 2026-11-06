@@ -50,6 +50,7 @@ import dev.patrickgold.florisboard.ime.text.gestures.SwipeAction
 import dev.patrickgold.florisboard.ime.text.key.KeyVariation
 import dev.patrickgold.florisboard.lib.FlorisLocale
 import dev.patrickgold.florisboard.lib.devtools.flogDebug
+import dev.patrickgold.florisboard.lib.devtools.flogWarning
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -298,6 +299,12 @@ class ImeController(
         }
 
         fun handleUpdateSelection(newSelection: K3TextRange) {
+            // A negative selection is not a cursor position, using it would make all following edits target the
+            // wrong part of the text
+            if (newSelection.start < 0 || newSelection.end < 0) {
+                flogWarning { "Ignoring invalid selection $newSelection" }
+                return
+            }
             val content = expectedContentQueue.popUntilOrNull { it.selection == newSelection }
             if (content != null) {
                 flogDebug { "DEDUPLICATED!!1" }
