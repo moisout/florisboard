@@ -335,10 +335,10 @@ class ImeController(
                 // TODO once k3lp supports this remove
                 ImeActions.Delete -> emitForwardDelete()
                 // TODO evaluate use of modern cursor anchor API instead of sending raw key events
-                ImeActions.ArrowDown -> state.editor.sendDownUpKeyEvent(KeyEvent.KEYCODE_DPAD_DOWN)
-                ImeActions.ArrowLeft -> state.editor.sendDownUpKeyEvent(KeyEvent.KEYCODE_DPAD_LEFT)
-                ImeActions.ArrowRight -> state.editor.sendDownUpKeyEvent(KeyEvent.KEYCODE_DPAD_RIGHT)
-                ImeActions.ArrowUp -> state.editor.sendDownUpKeyEvent(KeyEvent.KEYCODE_DPAD_UP)
+                ImeActions.ArrowDown -> sendCursorMoveKeyEvent(KeyEvent.KEYCODE_DPAD_DOWN)
+                ImeActions.ArrowLeft -> sendCursorMoveKeyEvent(KeyEvent.KEYCODE_DPAD_LEFT)
+                ImeActions.ArrowRight -> sendCursorMoveKeyEvent(KeyEvent.KEYCODE_DPAD_RIGHT)
+                ImeActions.ArrowUp -> sendCursorMoveKeyEvent(KeyEvent.KEYCODE_DPAD_UP)
                 // TODO clipboard manager needs a rewrite to match the new state paradigm
                 ImeActions.ClipboardCopy -> {
                     if (state.editor.info.isRichInputEditor) {
@@ -493,6 +493,16 @@ class ImeController(
                     else -> emitEnterKey()
                 }
             }
+        }
+
+        /**
+         * Moves the cursor by sending given arrow [keyCode]. The composition is finished first, as some editors,
+         * e.g. Firefox, extend it to the whole word and move the cursor to its end if the cursor is moved while
+         * composing. Once the editor reports the new selection the composition is evaluated anew.
+         */
+        private fun sendCursorMoveKeyEvent(keyCode: Int) {
+            state.editor.setComposition(null)
+            state.editor.sendDownUpKeyEvent(keyCode)
         }
 
         fun emitEnterKey() {
